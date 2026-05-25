@@ -1,0 +1,17 @@
+name: Post-deploy smoke
+
+on:
+  deployment_status:
+
+jobs:
+  smoke:
+    if: github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Home is 200
+        run: curl -fsS ${{ github.event.deployment_status.target_url }} > /dev/null
+      - name: Engineer API responds
+        run: |
+          curl -fsS -X POST ${{ github.event.deployment_status.target_url }}/api/engineer \
+            -H 'content-type: application/json' \
+            -d '{"state":{}}' | head -c 200
