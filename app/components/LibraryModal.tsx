@@ -23,6 +23,10 @@ interface Props {
   onPlay: (e: LibraryEntryShape, idx: number) => void;
   onPlayMany: (entries: LibraryEntryShape[]) => void;
   onAddToPlaylist: (e: LibraryEntryShape) => void;
+  onEdit: (
+    e: LibraryEntryShape,
+    patch: { name?: string; artist?: string | null; album?: string | null; year?: number | null },
+  ) => Promise<void>;
   onBulkImport: () => void;
 }
 
@@ -36,6 +40,7 @@ export function LibraryModal({
   onPlay,
   onPlayMany,
   onAddToPlaylist,
+  onEdit,
   onBulkImport,
 }: Props) {
   const hasSlotB = slots.some((s) => s.id === "B");
@@ -44,6 +49,7 @@ export function LibraryModal({
   const [view, setView] = useState<"tracks" | "albums">("tracks");
   const [sortBy, setSortBy] = useState<"recent" | "title" | "artist" | "album" | "bpm">("recent");
   const [openAlbum, setOpenAlbum] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const searched = query
     ? entries.filter((e) => {
@@ -198,69 +204,93 @@ export function LibraryModal({
           )
         ) : (
           <div className="space-y-2 mb-4">
-            {filtered.map(({ e: t, i }) => (
-              <div
-                key={t.id}
-                className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/40"
-              >
-                <div className="flex justify-between items-start gap-3 mb-2">
-                  <div className="min-w-0">
-                    <div className="text-sm text-zinc-200 font-medium truncate">
-                      {t.name}
-                    </div>
-                    {(t.artist || t.album) && (
-                      <div className="text-[11px] text-zinc-400 truncate">
-                        {t.artist}
-                        {t.artist && t.album && " · "}
-                        {t.album}
+            {filtered.map(({ e: t, i }) =>
+              editingId === t.id ? (
+                <EditTrackRow
+                  key={t.id}
+                  entry={t}
+                  onCancel={() => setEditingId(null)}
+                  onSave={async (patch) => {
+                    await onEdit(t, patch);
+                    setEditingId(null);
+                  }}
+                />
+              ) : (
+                <div
+                  key={t.id}
+                  className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/40"
+                >
+                  <div className="flex justify-between items-start gap-3 mb-2">
+                    <div className="min-w-0">
+                      <div className="text-sm text-zinc-200 font-medium truncate">
+                        {t.name}
                       </div>
-                    )}
-                    <div className="text-[10px] uppercase tracking-wider text-zinc-500 mt-0.5 font-mono">
-                      {t.bpm ? `${t.bpm} BPM` : "—"} · {formatSize(t.size)}
-                      {t.durationSec ? ` · ${formatTime(t.durationSec)}` : ""}
-                      {" · "}
-                      {t.source === "cloud" ? "☁" : "▢"}
+                      {(t.artist || t.album) && (
+                        <div className="text-[11px] text-zinc-400 truncate">
+                          {t.artist}
+                          {t.artist && t.album && " · "}
+                          {t.album}
+                        </div>
+                      )}
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500 mt-0.5 font-mono">
+                        {t.bpm ? `${t.bpm} BPM` : "—"} · {formatSize(t.size)}
+                        {t.durationSec ? ` · ${formatTime(t.durationSec)}` : ""}
+                        {" · "}
+                        {t.source === "cloud" ? "☁" : "▢"}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      {t.source === "cloud" && (
+                        <button
+                          onClick={() => setEditingId(t.id)}
+                          className="px-2 py-1 text-[10px] uppercase tracking-wider text-zinc-500 border border-zinc-800 rounded hover:border-zinc-600 hover:text-zinc-300"
+                          aria-label="Edit metadata"
+                          title="Edit title / artist / album / year"
+                        >
+                          ✎
+                        </button>
+                      )}
+                      <button
+                        onClick={() => onDelete(t)}
+                        className="px-2 py-1 text-[10px] uppercase tracking-wider text-zinc-500 border border-zinc-800 rounded hover:border-rose-500/40 hover:text-rose-400"
+                      >
+                        ✕
+                      </button>
                     </div>
                   </div>
-                  <button
-                    onClick={() => onDelete(t)}
-                    className="px-2 py-1 text-[10px] uppercase tracking-wider text-zinc-500 border border-zinc-800 rounded hover:border-rose-500/40 hover:text-rose-400 shrink-0"
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div className="flex gap-2 flex-wrap">
-                  <button
-                    onClick={() => onPlay(t, i)}
-                    className="flex-1 min-w-[80px] py-1.5 text-[11px] uppercase tracking-wider rounded bg-[#00ffcc] text-zinc-950 font-medium hover:bg-[#00ffcc]/85"
-                  >
-                    ▶ Play
-                  </button>
-                  {t.source === "cloud" && (
+                  <div className="flex gap-2 flex-wrap">
                     <button
-                      onClick={() => onAddToPlaylist(t)}
-                      className="flex-1 min-w-[80px] py-1.5 text-[11px] uppercase tracking-wider rounded border border-[#a78bfa]/40 text-[#a78bfa] hover:bg-[#a78bfa]/10"
+                      onClick={() => onPlay(t, i)}
+                      className="flex-1 min-w-[80px] py-1.5 text-[11px] uppercase tracking-wider rounded bg-[#00ffcc] text-zinc-950 font-medium hover:bg-[#00ffcc]/85"
                     >
-                      + Playlist
+                      ▶ Play
                     </button>
-                  )}
-                  <button
-                    onClick={() => onLoad(t, "A")}
-                    className="flex-1 min-w-[60px] py-1.5 text-[11px] uppercase tracking-wider rounded border border-[#00ffcc]/40 text-[#00ffcc] hover:bg-[#00ffcc]/10"
-                  >
-                    → A
-                  </button>
-                  {hasSlotB && (
+                    {t.source === "cloud" && (
+                      <button
+                        onClick={() => onAddToPlaylist(t)}
+                        className="flex-1 min-w-[80px] py-1.5 text-[11px] uppercase tracking-wider rounded border border-[#a78bfa]/40 text-[#a78bfa] hover:bg-[#a78bfa]/10"
+                      >
+                        + Playlist
+                      </button>
+                    )}
                     <button
-                      onClick={() => onLoad(t, "B")}
-                      className="flex-1 min-w-[60px] py-1.5 text-[11px] uppercase tracking-wider rounded border border-[#a78bfa]/40 text-[#a78bfa] hover:bg-[#a78bfa]/10"
+                      onClick={() => onLoad(t, "A")}
+                      className="flex-1 min-w-[60px] py-1.5 text-[11px] uppercase tracking-wider rounded border border-[#00ffcc]/40 text-[#00ffcc] hover:bg-[#00ffcc]/10"
                     >
-                      → B
+                      → A
                     </button>
-                  )}
+                    {hasSlotB && (
+                      <button
+                        onClick={() => onLoad(t, "B")}
+                        className="flex-1 min-w-[60px] py-1.5 text-[11px] uppercase tracking-wider rounded border border-[#a78bfa]/40 text-[#a78bfa] hover:bg-[#a78bfa]/10"
+                      >
+                        → B
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ),
+            )}
           </div>
         )}
         <button
@@ -268,6 +298,81 @@ export function LibraryModal({
           className="w-full h-10 rounded-lg bg-zinc-800 text-zinc-200 text-sm uppercase tracking-wider hover:bg-zinc-700"
         >
           Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EditTrackRow({
+  entry,
+  onCancel,
+  onSave,
+}: {
+  entry: LibraryEntryShape;
+  onCancel: () => void;
+  onSave: (patch: {
+    name?: string;
+    artist?: string | null;
+    album?: string | null;
+    year?: number | null;
+  }) => Promise<void>;
+}) {
+  const [name, setName] = useState(entry.name);
+  const [artist, setArtist] = useState(entry.artist ?? "");
+  const [album, setAlbum] = useState(entry.album ?? "");
+  // year isn't on LibraryEntryShape — defer it until needed.
+  const [saving, setSaving] = useState(false);
+  return (
+    <div className="p-3 rounded-lg border border-[#00ffcc]/40 bg-[#00ffcc]/[0.02]">
+      <div className="text-[10px] uppercase tracking-widest text-[#00ffcc]/80 mb-2">
+        Edit metadata
+      </div>
+      <div className="space-y-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Title"
+          className="w-full bg-black/40 border border-zinc-800 rounded px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-[#00ffcc]/40"
+        />
+        <input
+          value={artist}
+          onChange={(e) => setArtist(e.target.value)}
+          placeholder="Artist"
+          className="w-full bg-black/40 border border-zinc-800 rounded px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-[#00ffcc]/40"
+        />
+        <input
+          value={album}
+          onChange={(e) => setAlbum(e.target.value)}
+          placeholder="Album"
+          className="w-full bg-black/40 border border-zinc-800 rounded px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-[#00ffcc]/40"
+        />
+      </div>
+      <div className="flex gap-2 mt-3">
+        <button
+          onClick={async () => {
+            setSaving(true);
+            try {
+              await onSave({
+                name: name.trim() || entry.name,
+                artist: artist.trim() || null,
+                album: album.trim() || null,
+              });
+            } finally {
+              setSaving(false);
+            }
+          }}
+          disabled={saving}
+          className="flex-1 py-1.5 text-[11px] uppercase tracking-wider rounded bg-[#00ffcc] text-zinc-950 font-medium hover:bg-[#00ffcc]/85 disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={saving}
+          className="flex-1 py-1.5 text-[11px] uppercase tracking-wider rounded border border-zinc-800 text-zinc-400 hover:text-zinc-200"
+        >
+          Cancel
         </button>
       </div>
     </div>

@@ -204,6 +204,31 @@ export async function deleteCloudTrack(track: CloudTrack): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+export async function updateTrackMetadata(
+  id: string,
+  patch: {
+    name?: string;
+    artist?: string | null;
+    album?: string | null;
+    year?: number | null;
+  },
+): Promise<CloudTrack> {
+  const sb = getSupabaseClient();
+  const dbPatch: Record<string, unknown> = {};
+  if (patch.name !== undefined) dbPatch.name = patch.name;
+  if (patch.artist !== undefined) dbPatch.artist = patch.artist;
+  if (patch.album !== undefined) dbPatch.album = patch.album;
+  if (patch.year !== undefined) dbPatch.year = patch.year;
+  const { data, error } = await sb
+    .from("tracks")
+    .update(dbPatch)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return fromDBTrack(data as DBTrack);
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Mixes (always public-share via random path; no service role needed)
 // ────────────────────────────────────────────────────────────────────

@@ -36,11 +36,13 @@ import {
   deletePlaylist,
   addTrackToPlaylist,
   getPlaylistTracks,
+  updateTrackMetadata,
   type CloudTrack,
   type CloudMix,
   type Playlist,
 } from "@/lib/cloudLibrary";
 import { useAuth } from "./auth-provider";
+import { getSupabaseClient } from "@/lib/supabase/client";
 import { SignInModal } from "./components/SignInModal";
 import { MusicHub } from "./components/MusicHub";
 import { StickyNowPlaying } from "./components/NowPlayingWidget";
@@ -49,7 +51,17 @@ import { PlaylistsModal, PickPlaylistModal } from "./components/PlaylistsModal";
 import { MyMixesModal } from "./components/MyMixesModal";
 import { EngineerCard } from "./components/EngineerCard";
 import { MixerSection } from "./components/MixerSection";
+import {
+  InfoButton,
+  EvidenceBadge,
+  Slider,
+  Toggle,
+  SelectBox,
+  SessionDisplay,
+} from "./components/primitives";
+import { DeepDiveModal, AcademyModal } from "./components/AcademyModal";
 import { parseMetadata, guessFromFilename } from "@/lib/idTags";
+import { walkEntriesForAudio } from "@/lib/dropFolders";
 import {
   PRESET_LIST,
   PRESETS,
@@ -326,7 +338,38 @@ export default function Home() {
   const [plan, setPlan] = useState<SequencerStep[]>([]);
   const [planRunning, setPlanRunning] = useState(false);
   const [planStepIdx, setPlanStepIdx] = useState(0);
+  // When a step started — used to drive the live progress bar.
+  const [planStepStartedAt, setPlanStepStartedAt] = useState<number | null>(null);
+  // Forces re-render every second while a plan is running so the bar updates.
+  const [planTick, setPlanTick] = useState(0);
   const planTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Persist plans to localStorage so they survive page reloads.
+  const PLAN_STORAGE_KEY = "brainmix:sequencer-plan";
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(PLAN_STORAGE_KEY);
+      if (raw) setPlan(JSON.parse(raw));
+    } catch {
+      /* ignore corrupted state */
+    }
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(plan));
+    } catch {
+      /* localStorage may be full or unavailable */
+    }
+  }, [plan]);
+
+  // Tick the live progress while a plan runs so the bar fills smoothly.
+  useEffect(() => {
+    if (!planRunning) return;
+    const id = window.setInterval(() => setPlanTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [planRunning]);
 
   // Sync queue to library when library is the active source.
   useEffect(() => {
@@ -671,6 +714,58 @@ export default function Home() {
     }
   }, [user]);
 
+  // Realtime sync: when playlists/playlist_tracks/tracks change ANYWHERE
+  // (another tab, another device, even a SQL console) the local view updates
+  // within a second. Cheap — Supabase Realtime is included in the plan and
+  // we only run one channel per user.
+  useEffect(() => {
+    if (!user) return;
+    const sb = getSupabaseClient();
+    const channel = sb
+      .channel(`library:${user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "playlists",
+          filter: `user_id=eq.${user.id}`,
+        },
+        () => {
+          listPlaylists().then(setPlaylists).catch(() => {});
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "playlist_tracks" },
+        () => {
+          // No user_id column on the join table — RLS guarantees we only
+          // receive changes for our own playlists. Just refresh counts.
+          listPlaylists().then(setPlaylists).catch(() => {});
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "tracks",
+          filter: `user_id=eq.${user.id}`,
+        },
+        () => {
+          // Reload cloud tracks. Local IDB-only tracks aren't affected.
+          listCloudTracks()
+            .then((tracks) => setLibrary(tracks.map(cloudToEntry)))
+            .catch(() => {});
+        },
+      )
+      .subscribe();
+    return () => {
+      sb.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
   const handleCreatePlaylist = useCallback(
     async (name: string) => {
       if (!user) return null;
@@ -725,9 +820,11 @@ export default function Home() {
     (idx: number, currentPlan: SequencerStep[]) => {
       if (idx >= currentPlan.length) {
         setPlanRunning(false);
+        setPlanStepStartedAt(null);
         return;
       }
       setPlanStepIdx(idx);
+      setPlanStepStartedAt(Date.now());
       const step = currentPlan[idx];
       const preset = PRESETS[step.presetId];
       if (preset) {
@@ -751,6 +848,7 @@ export default function Home() {
     if (planTimerRef.current) clearTimeout(planTimerRef.current);
     planTimerRef.current = null;
     setPlanRunning(false);
+    setPlanStepStartedAt(null);
   }, []);
 
   useEffect(() => {
@@ -1236,14 +1334,35 @@ export default function Home() {
       onDragOver={(e) => {
         if (e.dataTransfer.types?.includes("Files")) e.preventDefault();
       }}
-      onDrop={(e) => {
+      onDrop={async (e) => {
         e.preventDefault();
         dragCounter.current = 0;
         setDragActive(false);
-        const files = Array.from(e.dataTransfer.files ?? []).filter((f) =>
-          /^audio\//.test(f.type) || /\.(mp3|m4a|wav|flac|ogg|aac|opus)$/i.test(f.name),
+        // dataTransfer.items lets us walk folders via webkitGetAsEntry, which
+        // the plain .files API doesn't. Fall back to .files if entries aren't
+        // available (e.g. Firefox without the experimental flag).
+        const items = e.dataTransfer.items;
+        let collected: File[] = [];
+        if (items && items.length > 0) {
+          const entries: FileSystemEntry[] = [];
+          for (const item of Array.from(items)) {
+            const ent = item.webkitGetAsEntry?.();
+            if (ent) entries.push(ent);
+          }
+          if (entries.length > 0) {
+            collected = await walkEntriesForAudio(entries);
+          } else {
+            collected = Array.from(e.dataTransfer.files ?? []);
+          }
+        } else {
+          collected = Array.from(e.dataTransfer.files ?? []);
+        }
+        const audio = collected.filter(
+          (f) =>
+            /^audio\//.test(f.type) ||
+            /\.(mp3|m4a|wav|flac|ogg|aac|opus)$/i.test(f.name),
         );
-        if (files.length > 0) handleBulkFiles(files);
+        if (audio.length > 0) handleBulkFiles(audio);
       }}
     >
       {dragActive && (
@@ -1683,6 +1802,16 @@ export default function Home() {
             <div className="space-y-2 mb-3">
               {plan.map((step, i) => {
                 const isActive = planRunning && i === planStepIdx;
+                const stepMs = Math.max(1, step.minutes) * 60 * 1000;
+                const elapsed = isActive && planStepStartedAt
+                  ? Date.now() - planStepStartedAt
+                  : 0;
+                const remaining = Math.max(0, stepMs - elapsed);
+                const progressPct = isActive
+                  ? Math.min(100, (elapsed / stepMs) * 100)
+                  : 0;
+                // Suppress unused-var warning on planTick - it forces this re-render.
+                void planTick;
                 return (
                   <div
                     key={step.id}
@@ -1736,6 +1865,20 @@ export default function Home() {
                         ✕
                       </button>
                     </div>
+                    {isActive && (
+                      <div className="mt-2">
+                        <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-[#00ffcc] transition-[width] duration-1000 ease-linear"
+                            style={{ width: `${progressPct}%` }}
+                          />
+                        </div>
+                        <div className="flex justify-between mt-1 text-[10px] font-mono text-zinc-500">
+                          <span>{formatTime(elapsed / 1000)}</span>
+                          <span>−{formatTime(remaining / 1000)}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -2079,6 +2222,15 @@ export default function Home() {
             setLibraryOpen(false);
           }}
           onAddToPlaylist={(e) => setAddToPlaylistTarget(e)}
+          onEdit={async (entry, patch) => {
+            // Look up the full local entry (with _cloud) by id.
+            const full = library.find((e) => e.id === entry.id);
+            if (!full || full.source !== "cloud" || !full._cloud) return;
+            const updated = await updateTrackMetadata(full._cloud.id, patch);
+            setLibrary((cur) =>
+              cur.map((e) => (e.id === entry.id ? cloudToEntry(updated) : e)),
+            );
+          }}
           onBulkImport={() => bulkInputRef.current?.click()}
         />
       )}
@@ -2125,282 +2277,3 @@ export default function Home() {
 // Components
 // =====================================================================
 
-function InfoButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 text-[11px] font-bold leading-none"
-      aria-label="What is this?"
-    >
-      ?
-    </button>
-  );
-}
-
-function EvidenceBadge({ level }: { level: "strong" | "mixed" | "vibes" }) {
-  const styles =
-    level === "strong"
-      ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/40"
-      : level === "mixed"
-        ? "bg-amber-500/10 text-amber-300 border-amber-500/40"
-        : "bg-fuchsia-500/10 text-fuchsia-300 border-fuchsia-500/40";
-  const label = level === "strong" ? "evidence" : level === "mixed" ? "mixed" : "vibes";
-  return (
-    <span className={`ml-auto text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${styles}`}>
-      {label}
-    </span>
-  );
-}
-
-function Slider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  display,
-  info,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  display: string;
-  info?: () => void;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div className="p-3 bg-zinc-900/30 border border-zinc-800 rounded-lg">
-      <div className="flex justify-between items-center mb-2">
-        <label className="text-xs uppercase tracking-wider text-zinc-400 flex items-center gap-2">
-          {label}
-          {info && <InfoButton onClick={info} />}
-        </label>
-        <span className="text-xs text-[#00ffcc] font-mono">{display}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full"
-      />
-    </div>
-  );
-}
-
-function Toggle({
-  label,
-  checked,
-  info,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  info?: () => void;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      onClick={() => onChange(!checked)}
-      className={`p-3 rounded-lg border text-left transition-colors ${
-        checked
-          ? "border-[#00ffcc]/40 bg-[#00ffcc]/5"
-          : "border-zinc-800 bg-zinc-900/30 hover:border-zinc-700"
-      }`}
-    >
-      <div className="flex justify-between items-center">
-        <span
-          className={`text-sm flex items-center gap-2 ${
-            checked ? "text-[#00ffcc]" : "text-zinc-400"
-          }`}
-        >
-          {label}
-          {info && (
-            <span
-              onClick={(e) => {
-                e.stopPropagation();
-                info();
-              }}
-              className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-zinc-800 text-zinc-400 text-[10px] font-bold"
-            >
-              ?
-            </span>
-          )}
-        </span>
-        <span
-          className={`text-[10px] uppercase tracking-wider ${
-            checked ? "text-[#00ffcc]" : "text-zinc-600"
-          }`}
-        >
-          {checked ? "On" : "Off"}
-        </span>
-      </div>
-    </button>
-  );
-}
-
-function SelectBox({
-  label,
-  value,
-  options,
-  info,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: { value: string; label: string }[];
-  info?: () => void;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="p-3 bg-zinc-900/30 border border-zinc-800 rounded-lg">
-      <label className="text-xs uppercase tracking-wider text-zinc-400 mb-2 flex items-center gap-2">
-        {label}
-        {info && <InfoButton onClick={info} />}
-      </label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-black/40 border border-zinc-800 rounded px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-[#00ffcc]/40"
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function SessionDisplay({
-  phase,
-  cycle,
-  total,
-  remaining,
-  progress,
-}: {
-  phase: "focus" | "rest" | "done";
-  cycle: number;
-  total: number;
-  remaining: number;
-  progress: number;
-}) {
-  if (phase === "done") {
-    return (
-      <div className="p-5 rounded-xl border border-[#00ffcc]/40 bg-[#00ffcc]/5 text-center">
-        <div className="text-lg text-[#00ffcc]">Session complete</div>
-        <div className="text-xs text-zinc-500 mt-1">
-          {total} cycle{total > 1 ? "s" : ""} done. Hydrate, walk, sunlight.
-        </div>
-      </div>
-    );
-  }
-  const phaseColor = phase === "focus" ? "#00ffcc" : "#a78bfa";
-  return (
-    <div
-      className="p-5 rounded-xl border bg-zinc-900/40"
-      style={{ borderColor: `${phaseColor}66` }}
-    >
-      <div className="flex justify-between items-baseline mb-2">
-        <span
-          className="text-xs uppercase tracking-widest font-medium"
-          style={{ color: phaseColor }}
-        >
-          {phase === "focus" ? "Focus" : "Rest"}
-        </span>
-        <span className="text-[11px] text-zinc-500 font-mono">
-          Cycle {cycle} / {total}
-        </span>
-      </div>
-      <div className="text-4xl font-mono text-zinc-200 tabular-nums mb-3">
-        {formatTime(remaining)}
-      </div>
-      <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
-        <div
-          className="h-full transition-all duration-500"
-          style={{
-            width: `${progress * 100}%`,
-            backgroundColor: phaseColor,
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-// =====================================================================
-// Mixer section: Easy Mix (1 slot) vs Remix (DJ studio with EQ/crossfader/recording)
-// =====================================================================
-
-
-function DeepDiveModal({ dive, onClose }: { dive: DeepDive; onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-[#16161a] border border-zinc-800 rounded-xl p-5 max-w-md w-full max-h-[80vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="text-base font-medium text-[#00ffcc] uppercase tracking-wider mb-1">
-          {dive.title}
-        </h2>
-        <div className="text-[11px] uppercase tracking-widest text-zinc-500 mb-3">
-          {dive.origin}
-        </div>
-        <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-line mb-4">
-          {dive.body}
-        </p>
-        <button
-          onClick={onClose}
-          className="w-full h-10 rounded-lg bg-zinc-800 text-zinc-200 text-sm uppercase tracking-wider hover:bg-zinc-700"
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function AcademyModal({
-  entry,
-  onClose,
-}: {
-  entry: AcademyEntry;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-[#16161a] border border-zinc-800 rounded-xl p-5 max-w-md w-full max-h-[80vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex justify-between items-start mb-3">
-          <h2 className="text-base font-medium text-[#00ffcc] uppercase tracking-wider">
-            {entry.title}
-          </h2>
-          <EvidenceBadge level={entry.evidence} />
-        </div>
-        <div className="text-sm text-zinc-300 leading-relaxed whitespace-pre-line mb-4">
-          {entry.body}
-        </div>
-        <button
-          onClick={onClose}
-          className="w-full h-10 rounded-lg bg-zinc-800 text-zinc-200 text-sm uppercase tracking-wider hover:bg-zinc-700"
-        >
-          Got it
-        </button>
-      </div>
-    </div>
-  );
-}
