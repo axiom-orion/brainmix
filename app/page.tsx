@@ -63,6 +63,13 @@ import { DeepDiveModal, AcademyModal } from "./components/AcademyModal";
 import { parseMetadata, guessFromFilename } from "@/lib/idTags";
 import { walkEntriesForAudio } from "@/lib/dropFolders";
 import {
+  setMediaMetadata,
+  bindMediaActions,
+  setMediaPosition,
+  setPlaybackState,
+} from "@/lib/mediaSession";
+import { signCoverUrl } from "@/lib/cloudLibrary";
+import {
   PRESET_LIST,
   PRESETS,
   type PresetId,
@@ -321,6 +328,15 @@ export default function Home() {
   const CROSSFADE_SEC = 6;
   // Guard so we only trigger the crossfade once per track.
   const crossfadeTriggeredRef = useRef<number | null>(null);
+
+  // Resume-where-you-left-off: persist a tiny snapshot on every tick, and
+  // prompt the user when they return with a saved position > 5s in.
+  const RESUME_KEY = "brainmix:player-resume";
+  const [resumePrompt, setResumePrompt] = useState<{
+    trackId: string;
+    trackName: string;
+    positionSec: number;
+  } | null>(null);
 
   // Playlists state
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
@@ -873,6 +889,148 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [playEntries],
   );
+
+  // ---- Resume persistence ----
+  // Snapshot once a second while playing. Debounced setTimeout keeps it cheap.
+  useEffect(() => {
+    if (queuePos == null || !queue[queuePos] || !playerPlaying) return;
+    const entry = queue[queuePos];
+    const id = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          RESUME_KEY,
+          JSON.stringify({
+            trackId: entry.id,
+            trackName: entry.name,
+            positionSec: playerPosition,
+          }),
+        );
+      } catch {
+        /* localStorage may be full */
+      }
+    }, 1000);
+    return () => window.clearTimeout(id);
+  }, [queuePos, queue, playerPosition, playerPlaying]);
+
+  // On library load (signed-in user or anonymous), check for a saved position.
+  // Only prompt if the track is still in the library and > 5s in.
+  useEffect(() => {
+    if (library.length === 0) return;
+    if (queuePos != null) return; // already playing
+    if (resumePrompt) return; // already prompting
+    try {
+      const raw = window.localStorage.getItem(RESUME_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as {
+        trackId: string;
+        trackName: string;
+        positionSec: number;
+      };
+      const exists = library.find((e) => e.id === saved.trackId);
+      if (exists && saved.positionSec > 5) {
+        setResumePrompt(saved);
+      }
+    } catch {
+      /* corrupted state, ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [library.length]);
+
+  const acceptResume = useCallback(async () => {
+    if (!resumePrompt) return;
+    const idx = library.findIndex((e) => e.id === resumePrompt.trackId);
+    if (idx < 0) {
+      setResumePrompt(null);
+      return;
+    }
+    const target = resumePrompt.positionSec;
+    setResumePrompt(null);
+    await playQueueAt(idx);
+    // Seek after audio is loaded. Two ticks usually enough.
+    window.setTimeout(() => {
+      const el = activeDeck === "a" ? playerAudioRefA.current : playerAudioRefB.current;
+      if (el) el.currentTime = target;
+    }, 300);
+  }, [resumePrompt, library, playQueueAt, activeDeck]);
+
+  const dismissResume = useCallback(() => {
+    setResumePrompt(null);
+    try {
+      window.localStorage.removeItem(RESUME_KEY);
+    } catch { /* ignore */ }
+  }, []);
+
+  // ---- Media Session integration ----
+  // Bind transport handlers once. They reference the latest handlers via refs
+  // so they don't go stale as queue state changes.
+  useEffect(() => {
+    bindMediaActions({
+      onPlay: () => activeAudioEl()?.play().catch(() => {}),
+      onPause: () => activeAudioEl()?.pause(),
+      onPrev: () => playerPrev(),
+      onNext: () => playerNext(),
+      onStop: () => {
+        const a = playerAudioRefA.current;
+        const b = playerAudioRefB.current;
+        if (a) a.pause();
+        if (b) b.pause();
+        setQueuePos(null);
+        setPlaybackState("none");
+      },
+      onSeekBackward: (offset) => {
+        const el = activeAudioEl();
+        if (el) el.currentTime = Math.max(0, el.currentTime - offset);
+      },
+      onSeekForward: (offset) => {
+        const el = activeAudioEl();
+        if (el) el.currentTime = Math.min(el.duration || Infinity, el.currentTime + offset);
+      },
+      onSeekTo: (t) => {
+        const el = activeAudioEl();
+        if (el) el.currentTime = t;
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerPrev, playerNext]);
+
+  // Push the current entry's metadata to the OS whenever the track changes.
+  useEffect(() => {
+    if (queuePos == null || !queue[queuePos]) {
+      setMediaMetadata(null);
+      setPlaybackState("none");
+      return;
+    }
+    const entry = queue[queuePos];
+    let cancelled = false;
+    const apply = (artworkUrl: string | null) => {
+      if (cancelled) return;
+      setMediaMetadata({
+        title: entry.name,
+        artist: entry.artist,
+        album: entry.album,
+        artworkUrl,
+      });
+    };
+    if (entry.coverPath) {
+      signCoverUrl(entry.coverPath).then((u) => apply(u)).catch(() => apply(null));
+    } else {
+      apply(null);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [queuePos, queue]);
+
+  // Reflect play/pause to the OS so the lock-screen button shows the right icon.
+  useEffect(() => {
+    setPlaybackState(playerPlaying ? "playing" : queuePos != null ? "paused" : "none");
+  }, [playerPlaying, queuePos]);
+
+  // Throttled position pushes — once per second is plenty for the OS scrubber.
+  useEffect(() => {
+    if (!playerPlaying || playerDuration <= 0) return;
+    setMediaPosition({ durationSec: playerDuration, positionSec: playerPosition });
+  }, [playerPlaying, playerPosition, playerDuration]);
 
   // Apply player volume.
   useEffect(() => {
@@ -1432,6 +1590,36 @@ export default function Home() {
             )}
           </div>
         </header>
+
+        {/* Resume-playback banner — shown only when there's a saved position. */}
+        {appView === "music" && resumePrompt && (
+          <div className="mb-4 p-3 rounded-xl border border-[#a78bfa]/40 bg-[#a78bfa]/[0.04] flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] uppercase tracking-widest text-[#a78bfa]/80">
+                Resume?
+              </div>
+              <div className="text-sm text-zinc-200 truncate">
+                {resumePrompt.trackName}
+              </div>
+              <div className="text-[10px] text-zinc-500 font-mono">
+                Pick up at {Math.floor(resumePrompt.positionSec / 60)}:
+                {Math.floor(resumePrompt.positionSec % 60).toString().padStart(2, "0")}
+              </div>
+            </div>
+            <button
+              onClick={acceptResume}
+              className="px-3 py-1.5 text-[11px] uppercase tracking-wider rounded bg-[#a78bfa] text-zinc-950 font-medium hover:bg-[#a78bfa]/85"
+            >
+              Resume
+            </button>
+            <button
+              onClick={dismissResume}
+              className="px-2 py-1.5 text-[11px] uppercase tracking-wider rounded border border-zinc-800 text-zinc-500 hover:text-zinc-300"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Music view (browse + play) */}
         {appView === "music" && (
