@@ -1,8 +1,72 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Design tokens (from BrainMix DJ Studio design system)
+   Surfaces, foreground, brand accents, semantic colors, type
+   scale, spacing, radii, shadows/glow, motion.
+   ============================================================ */
 :root {
   --background: #09090b;
   --foreground: #fafafa;
+
+  /* Surfaces */
+  --bg-black:       #09090b;
+  --bg-deep:        #050507;
+  --surface-1:      #16161a;
+  --surface-2:      #1c1c20;
+  --surface-3:      #27272a;
+  --hairline:       #27272a;
+  --hairline-soft:  rgba(39,39,42,0.6);
+
+  /* Foreground ramps */
+  --fg-1: #fafafa; --fg-2: #e4e4e7; --fg-3: #a1a1aa;
+  --fg-4: #71717a; --fg-5: #52525b; --fg-6: #3f3f46;
+
+  /* Brand accents — mint = deck A / focus, violet = deck B / rest, rose = record/import */
+  --mint:        #00ffcc;
+  --mint-bright: #34d399;
+  --violet:      #a78bfa;
+  --rose:        #fb7185;
+  --rose-rec:    #f43f5e;
+  --mint-05:  rgba(0,255,204,0.05);
+  --mint-10:  rgba(0,255,204,0.10);
+  --mint-40:  rgba(0,255,204,0.40);
+  --violet-05: rgba(167,139,250,0.05);
+  --violet-10: rgba(167,139,250,0.10);
+  --violet-40: rgba(167,139,250,0.40);
+  --rose-05:  rgba(251,113,133,0.05);
+  --rose-10:  rgba(251,113,133,0.10);
+
+  /* Semantic */
+  --evidence-strong: #34d399;
+  --evidence-mixed:  #fbbf24;
+  --evidence-vibes:  #e879f9;
+  --info: #38bdf8; --warn: #fbbf24; --ok: #34d399; --danger: #f43f5e;
+
+  /* Type */
+  --t-mega: 48px; --t-3xl: 32px; --t-2xl: 24px; --t-xl: 20px;
+  --t-lg: 16px; --t-md: 14px; --t-sm: 13px; --t-xs: 12px;
+  --t-2xs: 11px; --t-3xs: 10px; --t-4xs: 9px;
+
+  --tk-widest: 0.16em; --tk-wider: 0.10em; --tk-wide: 0.04em;
+
+  /* Spacing — multiples of 4 */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+  --s-12: 48px; --s-16: 64px;
+
+  /* Radii */
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-full: 9999px;
+
+  /* Glow + shadow */
+  --glow-mint:   0 0 0 1px rgba(0,255,204,0.40), 0 0 12px rgba(0,255,204,0.25);
+  --glow-violet: 0 0 0 1px rgba(167,139,250,0.40), 0 0 12px rgba(167,139,250,0.25);
+  --glow-rose:   0 0 0 1px rgba(251,113,133,0.40), 0 0 12px rgba(251,113,133,0.25);
+  --shadow-widget: 0 8px 24px rgba(0,0,0,0.5);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --d-fast: 120ms; --d-base: 200ms; --d-slow: 500ms;
 }
 
 @theme inline {
@@ -16,33 +80,67 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* ============================================================
+   Ambience modes — additive backgrounds toggled via Tweaks.
+   Applied as classes on the outermost <div> in page.tsx.
+   ============================================================ */
+.amb-glow {
+  background:
+    radial-gradient(circle at 0% 0%, var(--mint-05), transparent 35%),
+    radial-gradient(circle at 100% 100%, var(--violet-05), transparent 35%),
+    var(--bg-black);
+}
+.amb-grid {
+  background-color: var(--bg-black);
+  background-image:
+    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+.amb-scan {
+  position: relative;
+}
+.amb-scan::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0,0,0,0) 0 2px,
+    rgba(0,0,0,0.18) 2px 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+  mix-blend-mode: multiply;
+}
+
+/* Range slider — accent + thumb */
 input[type="range"] {
   appearance: none;
   -webkit-appearance: none;
   height: 4px;
-  background: #27272a;
-  border-radius: 2px;
+  background: var(--surface-3);
+  border-radius: var(--r-xs);
   outline: none;
 }
-
 input[type="range"]::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #34d399;
+  background: var(--mint-bright);
   cursor: pointer;
-  border: 2px solid #09090b;
+  border: 2px solid var(--bg-black);
 }
-
 input[type="range"]::-moz-range-thumb {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #34d399;
+  background: var(--mint-bright);
   cursor: pointer;
-  border: 2px solid #09090b;
+  border: 2px solid var(--bg-black);
 }

@@ -44,3 +44,7 @@ next-env.d.ts
 /test-results/
 /playwright-report/
 /playwright/.cache/
+
+# design prototype bundles (huge HTML blobs, kept locally for reference)
+/*.html
+/.tmp_*

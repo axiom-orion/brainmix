@@ -94,6 +94,15 @@ import {
 
 type Tab = "basic" | "moderate" | "advanced" | "timer";
 type AppView = "music" | "studio" | "timer";
+type Ambience = "off" | "glow" | "grid" | "scan";
+
+const AMBIENCE_ORDER: Ambience[] = ["off", "glow", "grid", "scan"];
+const AMBIENCE_LABEL: Record<Ambience, string> = {
+  off: "Off",
+  glow: "Glow",
+  grid: "Grid",
+  scan: "Scan",
+};
 
 interface AppState {
   presetId: PresetId | null;
@@ -175,6 +184,27 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("basic");
   const [appView, setAppView] = useState<AppView>("studio");
   const [accountOpen, setAccountOpen] = useState(false);
+  // Ambient backdrop mode — persisted, cycled via the ambience button.
+  const [ambience, setAmbience] = useState<Ambience>("off");
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("brainmix:ambience");
+      if (saved && AMBIENCE_ORDER.includes(saved as Ambience)) {
+        setAmbience(saved as Ambience);
+      }
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("brainmix:ambience", ambience);
+    } catch { /* ignore */ }
+  }, [ambience]);
+  const cycleAmbience = useCallback(() => {
+    setAmbience((cur) => {
+      const idx = AMBIENCE_ORDER.indexOf(cur);
+      return AMBIENCE_ORDER[(idx + 1) % AMBIENCE_ORDER.length];
+    });
+  }, []);
   const [state, setState] = useState<AppState>(() => presetToState(PRESETS.deskflow));
   const [playing, setPlaying] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -1471,7 +1501,9 @@ export default function Home() {
 
   return (
     <div
-      className="min-h-screen bg-[#09090b] text-zinc-100 font-sans"
+      className={`min-h-screen bg-[#09090b] text-zinc-100 font-sans ${
+        ambience !== "off" ? `amb-${ambience}` : ""
+      }`}
       onDragEnter={(e) => {
         if (e.dataTransfer.types?.includes("Files")) {
           e.preventDefault();
@@ -1569,6 +1601,18 @@ export default function Home() {
               className="text-[11px] md:text-xs uppercase tracking-wider px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:bg-zinc-900"
             >
               Science?
+            </button>
+            <button
+              onClick={cycleAmbience}
+              title={`Ambience: ${AMBIENCE_LABEL[ambience]} (tap to cycle)`}
+              aria-label={`Ambience ${AMBIENCE_LABEL[ambience]}`}
+              className={`text-[11px] md:text-xs uppercase tracking-wider px-3 py-1.5 rounded-md border transition-colors ${
+                ambience === "off"
+                  ? "border-zinc-700 text-zinc-400 hover:bg-zinc-900"
+                  : "border-[#00ffcc]/40 text-[#00ffcc] bg-[#00ffcc]/5 hover:bg-[#00ffcc]/10"
+              }`}
+            >
+              ✨ {AMBIENCE_LABEL[ambience]}
             </button>
             {authConfigured && (
               user ? (
