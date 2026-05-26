@@ -185,6 +185,14 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("basic");
   const [appView, setAppView] = useState<AppView>("studio");
   const [accountOpen, setAccountOpen] = useState(false);
+  // PWA shortcut: ?view=music / studio / timer opens directly to that tab.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const v = new URLSearchParams(window.location.search).get("view");
+    if (v === "music" || v === "studio" || v === "timer") {
+      setAppView(v);
+    }
+  }, []);
   // Ambient backdrop mode — persisted, cycled via the ambience button.
   const [ambience, setAmbience] = useState<Ambience>("off");
   useEffect(() => {
@@ -343,6 +351,14 @@ export default function Home() {
   const [importing, setImporting] = useState<{ total: number; done: number } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const dragCounter = useRef(0);
+  // Album-detected toasts surfaced after a bulk import.
+  interface AlbumToast {
+    id: string;
+    name: string;
+    artist: string | null;
+    tracks: LibraryEntry[];
+  }
+  const [albumToasts, setAlbumToasts] = useState<AlbumToast[]>([]);
 
   // Standalone music player state. queue is what plays; defaults to the full
   // library but can be swapped to an album or playlist subset.
@@ -394,6 +410,8 @@ export default function Home() {
     id: string;
     presetId: PresetId;
     minutes: number;
+    /** Optional: when this step starts, also play this library track. */
+    trackId?: string | null;
   }
   const [plan, setPlan] = useState<SequencerStep[]>([]);
   const [planRunning, setPlanRunning] = useState(false);
@@ -622,6 +640,30 @@ export default function Home() {
       }
       setLibrary((cur) => [...newEntries, ...cur]);
       setImporting(null);
+
+      // Album detection: group the just-imported entries by album. If any
+      // album has 3+ tracks, surface a toast so the user can play it as a
+      // unit. Caps to first 3 albums to avoid stacking toasts forever.
+      const byAlbum = new Map<string, LibraryEntry[]>();
+      for (const e of newEntries) {
+        const key = e.album?.trim();
+        if (!key) continue;
+        const arr = byAlbum.get(key) ?? [];
+        arr.push(e);
+        byAlbum.set(key, arr);
+      }
+      const detected: AlbumToast[] = Array.from(byAlbum.entries())
+        .filter(([, tracks]) => tracks.length >= 3)
+        .slice(0, 3)
+        .map(([name, tracks]) => ({
+          id: `${name}:${Date.now()}`,
+          name,
+          tracks,
+          artist: tracks[0]?.artist ?? null,
+        }));
+      if (detected.length > 0) {
+        setAlbumToasts((cur) => [...cur, ...detected]);
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [user],
@@ -866,6 +908,17 @@ export default function Home() {
   );
 
   // ----- Sequencer -----
+  // The plan's setTimeout chain captures these via refs so the loop sees
+  // the latest library + playEntries even after library updates mid-run.
+  const libraryRef = useRef(library);
+  useEffect(() => {
+    libraryRef.current = library;
+  }, [library]);
+  const playEntriesRef = useRef(playEntries);
+  useEffect(() => {
+    playEntriesRef.current = playEntries;
+  }, [playEntries]);
+
   const addPlanStep = useCallback(() => {
     setPlan((cur) => [
       ...cur,
@@ -901,6 +954,14 @@ export default function Home() {
       const preset = PRESETS[step.presetId];
       if (preset) {
         setState(presetToState(preset));
+      }
+      // Optional: kick off a library track when this step begins.
+      if (step.trackId) {
+        const lib = libraryRef.current;
+        const trackIdx = lib.findIndex((e) => e.id === step.trackId);
+        if (trackIdx >= 0) {
+          playEntriesRef.current(lib, trackIdx);
+        }
       }
       const ms = Math.max(1, step.minutes) * 60 * 1000;
       planTimerRef.current = setTimeout(() => {
@@ -2137,6 +2198,31 @@ export default function Home() {
                         ✕
                       </button>
                     </div>
+                    {/* Optional track-load picker — only shown when library has tracks. */}
+                    {library.length > 0 && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <span className="text-[10px] uppercase tracking-wider text-zinc-600 whitespace-nowrap">
+                          with track:
+                        </span>
+                        <select
+                          value={step.trackId ?? ""}
+                          onChange={(e) =>
+                            updatePlanStep(step.id, {
+                              trackId: e.target.value || null,
+                            })
+                          }
+                          disabled={planRunning}
+                          className="flex-1 min-w-0 bg-black/40 border border-zinc-800 rounded px-2 py-0.5 text-[11px] text-zinc-300 disabled:opacity-60"
+                        >
+                          <option value="">— none —</option>
+                          {library.slice(0, 200).map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.artist ? `${t.artist} — ${t.name}` : t.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     {isActive && (
                       <div className="mt-2">
                         <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
@@ -2397,6 +2483,53 @@ export default function Home() {
           </footer>
         )}
       </div>
+
+      {/* Album-detected toasts (fixed above the mini-player, stack at top-right on desktop). */}
+      {albumToasts.length > 0 && (
+        <div
+          className={`fixed left-0 right-0 z-30 px-3 pointer-events-none ${
+            queuePos != null ? "bottom-[120px]" : "bottom-[60px]"
+          }`}
+        >
+          <div className="mx-auto max-w-md md:max-w-2xl space-y-2 pointer-events-auto">
+            {albumToasts.map((t) => (
+              <div
+                key={t.id}
+                className="p-3 rounded-xl border border-[#00ffcc]/40 bg-[#16161a]/95 backdrop-blur-md shadow-lg shadow-black/50 flex items-center gap-3"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-[10px] uppercase tracking-widest text-[#00ffcc]">
+                    Album detected
+                  </div>
+                  <div className="text-sm text-zinc-100 font-medium truncate">
+                    {t.name}
+                  </div>
+                  <div className="text-[11px] text-zinc-500 truncate">
+                    {t.artist || "Various"} · {t.tracks.length} tracks
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    playEntries(t.tracks, 0);
+                    setAlbumToasts((cur) => cur.filter((x) => x.id !== t.id));
+                  }}
+                  className="px-3 py-1.5 text-[11px] uppercase tracking-wider rounded bg-[#00ffcc] text-zinc-950 font-medium hover:bg-[#00ffcc]/85"
+                >
+                  ▶ Play
+                </button>
+                <button
+                  onClick={() =>
+                    setAlbumToasts((cur) => cur.filter((x) => x.id !== t.id))
+                  }
+                  className="px-2 py-1.5 text-[11px] uppercase tracking-wider rounded border border-zinc-800 text-zinc-500 hover:text-zinc-300"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Sticky NowPlaying widget (fixed above bottom tab nav) */}
       {queuePos != null && queue[queuePos] && (

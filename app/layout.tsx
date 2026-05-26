@@ -15,14 +15,53 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "BrainMix - Neuro-Acoustic Matrix",
+  metadataBase: new URL("https://brainmix.vercel.app"),
+  title: {
+    default: "BrainMix · Neuro-Acoustic Matrix",
+    template: "%s · BrainMix",
+  },
   description:
-    "Layered brainwave entrainment audio. Pick a state, layer binaural/isochronic tones, drones, noise, EMDR. PWA-installable.",
+    "Layered brainwave entrainment + DJ studio. Binaural/isochronic tones, drones, noise, your music, recordable mixes. PWA-installable.",
   applicationName: "BrainMix",
+  generator: "Next.js",
+  keywords: [
+    "brainwave entrainment",
+    "binaural beats",
+    "isochronic tones",
+    "DJ mixer",
+    "focus music",
+    "pomodoro",
+    "PWA",
+  ],
+  authors: [{ name: "vorionsys" }],
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
     title: "BrainMix",
+  },
+  openGraph: {
+    type: "website",
+    siteName: "BrainMix",
+    title: "BrainMix · Neuro-Acoustic Matrix",
+    description:
+      "Layered brainwave entrainment + DJ studio. Your music, recordable mixes. Free, runs in any browser.",
+    url: "https://brainmix.vercel.app",
+    images: [{ url: "/icon.svg", width: 512, height: 512, alt: "BrainMix" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "BrainMix · Neuro-Acoustic Matrix",
+    description:
+      "Layered brainwave entrainment + DJ studio. Your music, recordable mixes.",
+    images: ["/icon.svg"],
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true },
+  },
+  formatDetection: {
+    telephone: false,
   },
 };
 
