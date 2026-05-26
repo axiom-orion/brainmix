@@ -35,4 +35,14 @@ test.describe("BrainMix smoke", () => {
     const r = await page.goto("/p/not-a-real-playlist-token");
     expect(r?.status()).toBe(404);
   });
+
+  test("/console renders the wide DJ-console layout", async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.goto("/console");
+    await expect(page.getByText(/Neuro-Acoustic Matrix · DJ Studio/i)).toBeVisible();
+    await expect(page.getByText(/Deck A · active/i)).toBeVisible();
+    // Use a unique substring — the mixer's crossfader readout shows the value.
+    await expect(page.getByText(/Crossfader · 0/i)).toBeVisible();
+    await expect(page.getByText(/The turntables/i)).toBeVisible();
+  });
 });

@@ -1691,6 +1691,14 @@ export default function Home() {
             >
               Science?
             </button>
+            <a
+              href="/console"
+              data-anno="Desktop DJ-console preview"
+              className="hidden md:inline-flex items-center text-[11px] md:text-xs uppercase tracking-wider px-3 py-1.5 rounded-md border border-[#a78bfa]/40 text-[#a78bfa] bg-[#a78bfa]/5 hover:bg-[#a78bfa]/10"
+              title="Wide DJ-console layout (desktop)"
+            >
+              ⛯ Console
+            </a>
             <button
               onClick={cycleAmbience}
               title={`Ambience: ${AMBIENCE_LABEL[ambience]} (tap to cycle)`}
