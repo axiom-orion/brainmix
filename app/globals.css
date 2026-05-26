@@ -145,6 +145,77 @@ body {
   position: relative;
 }
 
+/* ============================================================
+   Jog wheel (vinyl platter) — from the design system's Turntable.
+   Used by NowPlayingWidget as a spinning cover-art frame when
+   the user has no album artwork.
+   ============================================================ */
+.jog {
+  position: relative;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 50%, #1c1c20 0 26%, transparent 26%),
+    repeating-conic-gradient(from 0deg, #050507 0deg 2deg, #0c0c0e 2deg 4deg),
+    radial-gradient(circle at 50% 50%, #1a1a1d, #050507 70%);
+  border: 1px solid #2a2a2e;
+  animation: jog-spin var(--jog-dur, 8s) linear infinite;
+  box-shadow:
+    inset 0 0 0 3px #050507,
+    inset 0 0 0 4px #1f1f22,
+    0 0 0 1px var(--mint-40),
+    0 0 16px var(--mint-40);
+}
+.jog.paused { animation-play-state: paused; }
+.jog.deck-b {
+  box-shadow:
+    inset 0 0 0 3px #050507,
+    inset 0 0 0 4px #1f1f22,
+    0 0 0 1px var(--violet-40),
+    0 0 16px var(--violet-40);
+}
+@keyframes jog-spin { to { transform: rotate(360deg); } }
+
+.jog::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 8px;
+  border-radius: 1px;
+  background: var(--mint);
+  box-shadow: 0 0 6px rgba(0, 255, 204, 0.7);
+}
+.jog.deck-b::after {
+  background: var(--violet);
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.7);
+}
+
+.jog-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: linear-gradient(160deg, #2a2a2e, #0a0a0c);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  line-height: 1;
+  animation: jog-counter var(--jog-dur, 8s) linear infinite;
+  color: var(--mint);
+  border: 1px solid var(--mint-40);
+}
+.jog.paused .jog-hub { animation-play-state: paused; }
+.jog.deck-b .jog-hub {
+  color: var(--violet);
+  border-color: var(--violet-40);
+}
+@keyframes jog-counter { to { transform: translate(-50%, -50%) rotate(-360deg); } }
+
 /* Range slider — accent + thumb */
 input[type="range"] {
   appearance: none;

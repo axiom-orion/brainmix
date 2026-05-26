@@ -44,7 +44,14 @@ interface NowPlayingProps {
 
 export function StickyNowPlaying(props: NowPlayingProps) {
   return (
-    <div className="bg-[#16161a]/95 backdrop-blur-md rounded-xl border border-[#00ffcc]/30 shadow-lg shadow-black/50">
+    <div
+      className="backdrop-blur-md rounded-xl border shadow-lg"
+      style={{
+        backgroundColor: "rgba(22, 22, 26, 0.95)",
+        borderColor: "var(--mint-40)",
+        boxShadow: "var(--shadow-widget)",
+      }}
+    >
       <NowPlayingWidget {...props} />
     </div>
   );
@@ -101,14 +108,26 @@ export function NowPlayingWidget({
         </button>
       </div>
       <div className="flex items-center gap-3 mb-3">
-        <div className="w-14 h-14 rounded shrink-0 overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-          {coverUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
+        {coverUrl ? (
+          <div className="w-14 h-14 rounded shrink-0 overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={coverUrl} alt="" className="w-full h-full object-cover" />
-          ) : (
-            <span className="text-2xl text-zinc-700">♪</span>
-          )}
-        </div>
+          </div>
+        ) : (
+          // Spinning vinyl fallback. Pauses when not playing.
+          <div
+            className={`w-14 h-14 shrink-0 jog ${playing ? "" : "paused"}`}
+            style={{ ["--jog-dur" as string]: "8s" } as React.CSSProperties}
+            aria-hidden="true"
+          >
+            <span
+              className="jog-hub text-[14px]"
+              style={{ width: 22, height: 22 }}
+            >
+              ♪
+            </span>
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <div className="text-sm text-zinc-100 font-medium truncate">{entry.name}</div>
           {(entry.artist || entry.album) && (

@@ -1679,12 +1679,14 @@ export default function Home() {
             )}
             <button
               onClick={() => setModal(ACADEMY.ytmusic)}
+              data-anno="How to layer YT Music underneath"
               className="text-[11px] md:text-xs uppercase tracking-wider px-3 py-1.5 rounded-md border border-fuchsia-500/40 text-fuchsia-300 bg-fuchsia-500/5 hover:bg-fuchsia-500/15"
             >
               YT Music
             </button>
             <button
               onClick={() => setModal(ACADEMY.evidence)}
+              data-anno="What's evidence-backed vs vibes"
               className="text-[11px] md:text-xs uppercase tracking-wider px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:bg-zinc-900"
             >
               Science?
@@ -1790,6 +1792,13 @@ export default function Home() {
               <button
                 key={t}
                 onClick={() => setTab(t)}
+                data-anno={
+                  t === "basic"
+                    ? "Preset-only mode"
+                    : t === "moderate"
+                      ? "Slider tweaks"
+                      : "Full audio control"
+                }
                 className={`flex-1 py-2 text-xs uppercase tracking-wider font-medium rounded transition-colors ${
                   tab === t
                     ? "bg-zinc-900 text-[#00ffcc]"
@@ -2111,7 +2120,10 @@ export default function Home() {
 
         {/* Session sequencer - schedule preset transitions for long sessions */}
         {appView === "studio" && (
-          <section className="mt-4 border-t border-zinc-900 pt-5">
+          <section
+            className="mt-4 border-t border-zinc-900 pt-5"
+            data-anno="Auto-walks the matrix through presets"
+          >
             <div className="flex justify-between items-baseline mb-2">
               <h3 className="text-xs uppercase tracking-widest text-[#00ffcc]">
                 Session plan
