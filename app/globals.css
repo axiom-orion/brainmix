@@ -117,6 +117,34 @@ body {
   mix-blend-mode: multiply;
 }
 
+/* ============================================================
+   Annotation overlays — when .show-anno is on the app root,
+   key controls get a small floating caption that explains what
+   they do. Useful for onboarding + screenshots.
+   ============================================================ */
+.show-anno [data-anno]::after {
+  content: attr(data-anno);
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: var(--tk-widest);
+  color: var(--fg-3);
+  background: var(--bg-deep);
+  border: 1px solid var(--hairline);
+  padding: 3px 7px;
+  border-radius: var(--r-xs);
+  pointer-events: none;
+  font-family: var(--font-sans);
+}
+.show-anno [data-anno] {
+  position: relative;
+}
+
 /* Range slider — accent + thumb */
 input[type="range"] {
   appearance: none;

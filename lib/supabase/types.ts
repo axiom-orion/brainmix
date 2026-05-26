@@ -32,6 +32,8 @@ export interface DBPlaylist {
   user_id: string;
   name: string;
   created_at: string;
+  is_public: boolean;
+  share_token: string;
 }
 
 export interface DBPlaylistTrack {

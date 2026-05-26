@@ -305,10 +305,41 @@ export interface Playlist {
   name: string;
   createdAt: string;
   trackCount: number;
+  isPublic: boolean;
+  shareToken: string;
 }
 
 function fromDBPlaylist(p: DBPlaylist, count = 0): Playlist {
-  return { id: p.id, name: p.name, createdAt: p.created_at, trackCount: count };
+  return {
+    id: p.id,
+    name: p.name,
+    createdAt: p.created_at,
+    trackCount: count,
+    isPublic: p.is_public,
+    shareToken: p.share_token,
+  };
+}
+
+export async function setPlaylistPublic(
+  id: string,
+  isPublic: boolean,
+): Promise<Playlist> {
+  const sb = getSupabaseClient();
+  const { data, error } = await sb
+    .from("playlists")
+    .update({ is_public: isPublic })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return fromDBPlaylist(data as DBPlaylist, 0);
+}
+
+export function playlistShareUrl(shareToken: string): string {
+  if (typeof window === "undefined") {
+    return `https://brainmix.vercel.app/p/${shareToken}`;
+  }
+  return `${window.location.origin}/p/${shareToken}`;
 }
 
 export async function listPlaylists(): Promise<Playlist[]> {

@@ -5,7 +5,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Playlist } from "@/lib/cloudLibrary";
+import { playlistShareUrl, type Playlist } from "@/lib/cloudLibrary";
 
 export function PlaylistsModal({
   playlists,
@@ -13,15 +13,25 @@ export function PlaylistsModal({
   onCreate,
   onDelete,
   onPlay,
+  onTogglePublic,
 }: {
   playlists: Playlist[];
   onClose: () => void;
   onCreate: (name: string) => Promise<Playlist | null>;
   onDelete: (id: string) => Promise<void>;
   onPlay: (id: string) => Promise<void>;
+  onTogglePublic: (id: string, isPublic: boolean) => Promise<void>;
 }) {
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const copyShare = async (token: string) => {
+    try {
+      await navigator.clipboard.writeText(playlistShareUrl(token));
+      setCopiedToken(token);
+      setTimeout(() => setCopiedToken(null), 1500);
+    } catch { /* clipboard blocked */ }
+  };
   return (
     <div
       className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center p-4"
@@ -71,29 +81,52 @@ export function PlaylistsModal({
             {playlists.map((p) => (
               <div
                 key={p.id}
-                className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/40 flex items-center gap-2"
+                className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/40"
               >
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-zinc-200 font-medium truncate">
-                    {p.name}
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-zinc-200 font-medium truncate">
+                      {p.name}
+                    </div>
+                    <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-mono">
+                      {p.trackCount} track{p.trackCount !== 1 ? "s" : ""}
+                      {p.isPublic && " · public"}
+                    </div>
                   </div>
-                  <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-mono">
-                    {p.trackCount} track{p.trackCount !== 1 ? "s" : ""}
-                  </div>
+                  <button
+                    onClick={() => onPlay(p.id)}
+                    disabled={p.trackCount === 0}
+                    className="px-2.5 py-1 text-[11px] uppercase tracking-wider rounded bg-[#a78bfa] text-zinc-950 font-medium hover:bg-[#a78bfa]/85 disabled:opacity-30"
+                  >
+                    ▶
+                  </button>
+                  <button
+                    onClick={() => onDelete(p.id)}
+                    className="px-2 py-1 text-[10px] uppercase tracking-wider text-zinc-500 border border-zinc-800 rounded hover:border-rose-500/40 hover:text-rose-400"
+                  >
+                    ✕
+                  </button>
                 </div>
-                <button
-                  onClick={() => onPlay(p.id)}
-                  disabled={p.trackCount === 0}
-                  className="px-2.5 py-1 text-[11px] uppercase tracking-wider rounded bg-[#a78bfa] text-zinc-950 font-medium hover:bg-[#a78bfa]/85 disabled:opacity-30"
-                >
-                  ▶
-                </button>
-                <button
-                  onClick={() => onDelete(p.id)}
-                  className="px-2 py-1 text-[10px] uppercase tracking-wider text-zinc-500 border border-zinc-800 rounded hover:border-rose-500/40 hover:text-rose-400"
-                >
-                  ✕
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onTogglePublic(p.id, !p.isPublic)}
+                    className={`flex-1 py-1 text-[10px] uppercase tracking-wider rounded border ${
+                      p.isPublic
+                        ? "border-[#a78bfa]/40 text-[#a78bfa] bg-[#a78bfa]/5"
+                        : "border-zinc-800 text-zinc-500 hover:text-zinc-300"
+                    }`}
+                  >
+                    {p.isPublic ? "Public ✓" : "Make public"}
+                  </button>
+                  {p.isPublic && (
+                    <button
+                      onClick={() => copyShare(p.shareToken)}
+                      className="flex-1 py-1 text-[10px] uppercase tracking-wider rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-900"
+                    >
+                      {copiedToken === p.shareToken ? "Copied!" : "Copy URL"}
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

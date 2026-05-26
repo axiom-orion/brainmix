@@ -30,4 +30,9 @@ test.describe("BrainMix smoke", () => {
     const r = await page.goto("/m/definitely-not-a-real-token");
     expect(r?.status()).toBe(404);
   });
+
+  test("unknown playlist token returns 404", async ({ page }) => {
+    const r = await page.goto("/p/not-a-real-playlist-token");
+    expect(r?.status()).toBe(404);
+  });
 });

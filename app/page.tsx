@@ -37,6 +37,7 @@ import {
   addTrackToPlaylist,
   getPlaylistTracks,
   updateTrackMetadata,
+  setPlaylistPublic,
   type CloudTrack,
   type CloudMix,
   type Playlist,
@@ -205,6 +206,19 @@ export default function Home() {
       return AMBIENCE_ORDER[(idx + 1) % AMBIENCE_ORDER.length];
     });
   }, []);
+
+  // Annotations Tweak — floating labels over key controls. Persisted.
+  const [showAnno, setShowAnno] = useState(false);
+  useEffect(() => {
+    try {
+      setShowAnno(window.localStorage.getItem("brainmix:annotations") === "on");
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("brainmix:annotations", showAnno ? "on" : "off");
+    } catch { /* ignore */ }
+  }, [showAnno]);
   const [state, setState] = useState<AppState>(() => presetToState(PRESETS.deskflow));
   const [playing, setPlaying] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -659,9 +673,21 @@ export default function Home() {
 
         targetEl.src = url;
         targetEl.currentTime = 0;
+        targetEl.playbackRate = 1; // reset before any beatmatch
         await targetEl.play().catch(() => {});
 
         if (useCrossfade) {
+          // Tempo lock: if both tracks have a BPM and they're within ±15%,
+          // nudge the incoming deck's playbackRate so the two beats line up.
+          // Standard DJ beatmatch trick. Skip when BPMs are too far apart
+          // (would sound chipmunk'd or molasses) or when either is missing.
+          const outgoing = queue[queuePos!];
+          if (outgoing?.bpm && entry.bpm && entry.bpm > 0) {
+            const ratio = outgoing.bpm / entry.bpm;
+            if (ratio >= 0.85 && ratio <= 1.15) {
+              targetEl.playbackRate = ratio;
+            }
+          }
           // Equal-power crossfade over CROSSFADE_SEC.
           djBus.crossfadePlayer(target, CROSSFADE_SEC);
           // Pause the outgoing deck once the fade is done.
@@ -1503,7 +1529,7 @@ export default function Home() {
     <div
       className={`min-h-screen bg-[#09090b] text-zinc-100 font-sans ${
         ambience !== "off" ? `amb-${ambience}` : ""
-      }`}
+      } ${showAnno ? "show-anno" : ""}`}
       onDragEnter={(e) => {
         if (e.dataTransfer.types?.includes("Files")) {
           e.preventDefault();
@@ -1606,6 +1632,7 @@ export default function Home() {
               onClick={cycleAmbience}
               title={`Ambience: ${AMBIENCE_LABEL[ambience]} (tap to cycle)`}
               aria-label={`Ambience ${AMBIENCE_LABEL[ambience]}`}
+              data-anno="Backdrop ambience"
               className={`text-[11px] md:text-xs uppercase tracking-wider px-3 py-1.5 rounded-md border transition-colors ${
                 ambience === "off"
                   ? "border-zinc-700 text-zinc-400 hover:bg-zinc-900"
@@ -1613,6 +1640,19 @@ export default function Home() {
               }`}
             >
               ✨ {AMBIENCE_LABEL[ambience]}
+            </button>
+            <button
+              onClick={() => setShowAnno((v) => !v)}
+              title={showAnno ? "Hide control labels" : "Show floating control labels"}
+              aria-label={showAnno ? "Hide annotations" : "Show annotations"}
+              aria-pressed={showAnno}
+              className={`text-[11px] md:text-xs uppercase tracking-wider px-3 py-1.5 rounded-md border transition-colors ${
+                showAnno
+                  ? "border-[#a78bfa]/40 text-[#a78bfa] bg-[#a78bfa]/5 hover:bg-[#a78bfa]/10"
+                  : "border-zinc-700 text-zinc-400 hover:bg-zinc-900"
+              }`}
+            >
+              ⓘ Anno
             </button>
             {authConfigured && (
               user ? (
@@ -2424,6 +2464,13 @@ export default function Home() {
               onClick={() => setAppView(t.id)}
               aria-label={t.label}
               aria-pressed={appView === t.id}
+              data-anno={
+                t.id === "music"
+                  ? "Browse + play your library"
+                  : t.id === "studio"
+                    ? "Matrix + DJ decks + recording"
+                    : "Pomodoro / ultradian session"
+              }
               className={`flex flex-col items-center justify-center gap-0.5 transition-colors ${
                 appView === t.id ? "text-[#00ffcc]" : "text-zinc-500 hover:text-zinc-300"
               }`}
@@ -2473,6 +2520,14 @@ export default function Home() {
           onCreate={handleCreatePlaylist}
           onDelete={handleDeletePlaylist}
           onPlay={handlePlayPlaylist}
+          onTogglePublic={async (id, isPublic) => {
+            const updated = await setPlaylistPublic(id, isPublic);
+            setPlaylists((cur) =>
+              cur.map((p) =>
+                p.id === id ? { ...p, isPublic: updated.isPublic, shareToken: updated.shareToken } : p,
+              ),
+            );
+          }}
         />
       )}
       {addToPlaylistTarget && (
