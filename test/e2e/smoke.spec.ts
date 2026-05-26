@@ -40,9 +40,14 @@ test.describe("BrainMix smoke", () => {
     await page.setViewportSize({ width: 1400, height: 900 });
     await page.goto("/console");
     await expect(page.getByText(/Neuro-Acoustic Matrix · DJ Studio/i)).toBeVisible();
-    await expect(page.getByText(/Deck A · active/i)).toBeVisible();
-    // Use a unique substring — the mixer's crossfader readout shows the value.
+    await expect(page.getByText(/Deck A · empty/i)).toBeVisible();
     await expect(page.getByText(/Crossfader · 0/i)).toBeVisible();
     await expect(page.getByText(/The turntables/i)).toBeVisible();
+  });
+
+  test("/stats (unauth) shows sign-in prompt", async ({ page }) => {
+    const r = await page.goto("/stats");
+    expect(r?.status()).toBe(200);
+    await expect(page.getByText(/Sign in on the main app/i)).toBeVisible();
   });
 });

@@ -1,88 +1,61 @@
 "use client";
 
 /**
- * /console — wide DJ-console preview layout.
+ * /console — wide DJ-console route, NOW WIRED to the real audio engine.
  *
- * Ports the BrainMix Design System's ui_kits/web/ JSX into TSX. This is a
- * visual prototype right now: two turntables, sticky mixer column, optional
- * manual panel, sticky now-playing rail. State is local + mocked — actual
- * audio still lives in the mobile-first app at /. A future round can wire
- * these controls to djBus + the real slot/preset state.
+ * Each deck binds an HTMLAudioElement through djBus.ensureDeck(). Crossfader
+ * drives djBus.setCrossfader. The LPF bar drives djBus.setFilterCutoff.
+ * Preset cards start the brainwave matrix engine with the picked preset.
  *
- * Best viewed on a desktop (≥1180px). Narrower viewports collapse to a
- * single column.
+ * State is local to this route — it does not sync with the mobile app at /.
+ * If you want cross-route sync, lift the slot state into a context provider
+ * at app/layout.tsx (or persist to Supabase realtime).
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import "./console.css";
+import { djBus, downloadBlob } from "@/lib/djBus";
+import {
+  start as startEngine,
+  stop as stopEngine,
+  type EngineConfig,
+} from "@/lib/audioEngine";
+import { PRESETS, type PresetId } from "@/lib/presets";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mock data
+// Slot state
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface MockTrack {
-  title: string;
-  sub: string;
-  bpm: number;
-  tempo: string;
-  key: string;
-  cue: string;
+interface DeckState {
+  /** Object URL of the loaded file, or null if empty. */
+  url: string | null;
+  name: string;
+  artist: string;
+  bpm: number | null;
   position: number;
   duration: number;
-  eqLow: number;
-  eqMid: number;
-  eqHigh: number;
-  filterHz: number;
-  loopOn: boolean;
-  loopStart: string;
-  hotCues: (string | null)[];
+  playing: boolean;
 }
 
-const TRACK_A: MockTrack = {
-  title: "Cumbia Sobre El Mar — Quantic Remix",
-  sub: "Quantic & Nidia Góngora · The Curao Sessions",
-  bpm: 82,
-  tempo: "1.04x",
-  key: "F♯m",
-  cue: "00:32",
-  position: 134,
-  duration: 318,
-  eqLow: 2.5,
-  eqMid: -1.5,
-  eqHigh: 3.0,
-  filterHz: 22050,
-  loopOn: false,
-  loopStart: "02:14",
-  hotCues: ["00:00", "00:32", "01:04", "02:12", "03:08", null, null, null],
-};
+const EMPTY_DECK = (): DeckState => ({
+  url: null,
+  name: "— empty —",
+  artist: "Drop a file or click the deck",
+  bpm: null,
+  position: 0,
+  duration: 0,
+  playing: false,
+});
 
-const TRACK_B: MockTrack = {
-  title: "Frio en el Alma — Bareto Edit",
-  sub: "Bareto · Cumbia · 4:32",
-  bpm: 94,
-  tempo: "0.87x",
-  key: "A♭m",
-  cue: "00:48",
-  position: 48,
-  duration: 272,
-  eqLow: -2.0,
-  eqMid: 0,
-  eqHigh: 1.5,
-  filterHz: 4200,
-  loopOn: true,
-  loopStart: "00:48",
-  hotCues: ["00:00", "00:48", null, null, null, null, null, null],
-};
-
-interface PresetSpec {
-  id: string;
+interface ConsolePreset {
+  id: PresetId;
   emoji: string;
   name: string;
   hz: string;
 }
 
-const PRESETS: PresetSpec[] = [
+const CONSOLE_PRESETS: ConsolePreset[] = [
   { id: "deskflow", emoji: "⚡", name: "Desk Flow", hz: "14 Hz · 80 BPM" },
   { id: "poolside", emoji: "🌴", name: "Poolside", hz: "8 Hz · 85 BPM" },
   { id: "archaic", emoji: "🌑", name: "Archaic", hz: "7 Hz · EMDR" },
@@ -90,6 +63,19 @@ const PRESETS: PresetSpec[] = [
   { id: "sleep", emoji: "🌙", name: "Sleep", hz: "2 Hz · delta" },
   { id: "energy", emoji: "🔥", name: "Energy", hz: "18 Hz · 95 BPM" },
 ];
+
+// Mirror of presetToState → engine config, simplified for the console.
+function presetToEngineConfig(presetId: PresetId): EngineConfig {
+  const p = PRESETS[presetId];
+  return {
+    ...p.params,
+    // EngineConfig fields beyond PresetParams:
+    mode: "isochronic",
+    masterGain: p.defaultVolume,
+    breathPacer: false,
+    emdrPan: false,
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -116,7 +102,6 @@ function ConsoleTopBar({
   return (
     <header className="console-topbar">
       <div className="brand">
-        {/* Brand mark — inline SVG so it renders without an extra request. */}
         <svg
           className="brand-mark"
           viewBox="0 0 28 28"
@@ -152,19 +137,259 @@ function ConsoleTopBar({
         <Link href="/" className="console-back">
           ← Mobile app
         </Link>
-        <button className="pill">Library</button>
-        <button className="pill">☁ My Mixes</button>
-        <button className="signin">Sign in</button>
+        <Link href="/stats" className="pill" style={{ textDecoration: "none" }}>
+          📊 Stats
+        </Link>
       </div>
     </header>
   );
 }
 
-function Turntable({ deck, spinning }: { deck: "a" | "b"; spinning: boolean }) {
+function Turntable({
+  deck,
+  spinning,
+  onClick,
+}: {
+  deck: "a" | "b";
+  spinning: boolean;
+  onClick?: () => void;
+}) {
   return (
     <div className="jog-wrap">
-      <div className={"console-jog" + (spinning ? "" : " paused")}>
+      <div
+        className={"console-jog" + (spinning ? "" : " paused")}
+        onClick={onClick}
+        style={{ cursor: onClick ? "pointer" : undefined }}
+      >
         <div className="console-hub">{deck.toUpperCase()}</div>
+      </div>
+    </div>
+  );
+}
+
+function DeckPanel({
+  side,
+  spinning,
+  state,
+  filterHz,
+  onTogglePlay,
+  onLoad,
+  onSeek,
+  onFilter,
+}: {
+  side: "a" | "b";
+  spinning: boolean;
+  state: DeckState;
+  filterHz: number;
+  onTogglePlay: () => void;
+  onLoad: () => void;
+  onSeek: (t: number) => void;
+  onFilter: (hz: number) => void;
+}) {
+  const isA = side === "a";
+  const accentLabel = state.url
+    ? isA
+      ? "Deck A · ready"
+      : "Deck B · ready"
+    : `Deck ${side.toUpperCase()} · empty`;
+  const accentClass = isA ? "act-a" : "act-b";
+  const playClass = isA ? "play-a" : "play-b";
+
+  // Mini beat-grid ticks.
+  const ticks: number[] = [];
+  for (let i = 1; i < 12; i++) ticks.push(i * 8.3);
+  const pct = state.duration > 0 ? (state.position / state.duration) * 100 : 0;
+
+  return (
+    <div className={`deck ${side}`}>
+      <div
+        style={{
+          width: 320,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+        }}
+      >
+        <span
+          style={{
+            fontSize: 10,
+            textTransform: "uppercase",
+            letterSpacing: "0.16em",
+            color: isA ? "var(--mint)" : "var(--violet)",
+          }}
+        >
+          {accentLabel}
+        </span>
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 10,
+            color: "var(--fg-4)",
+          }}
+        >
+          {state.url ? (spinning ? "▶ live" : "❚❚ paused") : "no file"}
+        </span>
+      </div>
+
+      <Turntable deck={side} spinning={spinning} onClick={onLoad} />
+
+      <div className="deck-meta">
+        <div className="title">{state.name}</div>
+        <div className="sub">{state.artist}</div>
+      </div>
+
+      <div className="deck-scrub">
+        <div
+          className="bar"
+          onClick={(e) => {
+            if (state.duration <= 0) return;
+            const r = e.currentTarget.getBoundingClientRect();
+            const ratio = (e.clientX - r.left) / r.width;
+            onSeek(ratio * state.duration);
+          }}
+          style={{ cursor: state.duration > 0 ? "pointer" : "default" }}
+        >
+          <div className="fill" style={{ width: `${pct}%` }} />
+          <div className="ticks">
+            {ticks.map((p, i) => (
+              <div key={i} className="tk" style={{ left: `${p}%` }} />
+            ))}
+          </div>
+        </div>
+        <div className="times">
+          <span>{formatTime(state.position)}</span>
+          <span>{formatTime(state.duration)}</span>
+        </div>
+      </div>
+
+      <div className="deck-tp">
+        <button
+          className={`btn ${accentClass}`}
+          aria-label="Hot cue prev"
+          onClick={() => onSeek(Math.max(0, state.position - 10))}
+        >
+          ⏮
+        </button>
+        <button
+          className={`btn ${accentClass}`}
+          aria-label="Cue (jump to start)"
+          onClick={() => onSeek(0)}
+        >
+          ⏯
+        </button>
+        <button
+          className={`btn ${playClass}`}
+          onClick={onTogglePlay}
+          aria-label={spinning ? "Pause" : "Play"}
+          disabled={!state.url}
+          style={!state.url ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
+        >
+          {spinning ? "❚❚" : "▶"}
+        </button>
+        <button className={`btn ${accentClass}`} aria-label="Loop">↻</button>
+        <button
+          className={`btn ${accentClass}`}
+          aria-label="Forward 10s"
+          onClick={() => onSeek(Math.min(state.duration, state.position + 10))}
+        >
+          ⏭
+        </button>
+      </div>
+
+      <div className="deck-stats">
+        <div className="s">
+          <div className="l">BPM</div>
+          <div className="v">{state.bpm ?? "—"}</div>
+        </div>
+        <div className="s">
+          <div className="l">Tempo</div>
+          <div className="v">1.00x</div>
+        </div>
+        <div className="s">
+          <div className="l">Key</div>
+          <div className="v">—</div>
+        </div>
+        <div className="s">
+          <div className="l">Cue</div>
+          <div className="v">{formatTime(state.position)}</div>
+        </div>
+      </div>
+
+      <div className="deck-eq">
+        <div className="panel">
+          <div className="head">
+            <span className="name">EQ · 3-band</span>
+            <span className="v">0.0/0.0/0.0</span>
+          </div>
+          <div className="eq3">
+            <EqBand label="Low" value={0} />
+            <EqBand label="Mid" value={0} />
+            <EqBand label="High" value={0} />
+          </div>
+        </div>
+        <div className="panel">
+          <div className="head">
+            <span className="name">LPF · cutoff</span>
+            <span className="v">
+              {filterHz >= 22000 ? "OPEN" : `${Math.round(filterHz)} Hz`}
+            </span>
+          </div>
+          {/* Draggable LPF bar. Click anywhere to jump cutoff. */}
+          <div
+            onMouseDown={(e) => {
+              const rail = e.currentTarget;
+              const rect = rail.getBoundingClientRect();
+              const apply = (x: number) => {
+                const ratio = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+                onFilter(ratio * 22050);
+              };
+              apply(e.clientX);
+              const move = (ev: MouseEvent) => apply(ev.clientX);
+              const up = () => {
+                window.removeEventListener("mousemove", move);
+                window.removeEventListener("mouseup", up);
+              };
+              window.addEventListener("mousemove", move);
+              window.addEventListener("mouseup", up);
+            }}
+            style={{
+              height: 8,
+              background: "var(--surface-3)",
+              borderRadius: 2,
+              marginTop: 2,
+              position: "relative",
+              boxShadow: "inset 0 1px 2px rgba(0,0,0,.5)",
+              cursor: "ew-resize",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: `${Math.min(100, (filterHz / 22050) * 100)}%`,
+                background: isA ? "var(--mint)" : "var(--violet)",
+                borderRadius: 2,
+              }}
+            />
+          </div>
+          <div className="head" style={{ marginTop: 14 }}>
+            <span className="name">Loop · 4 bar</span>
+            <span className="v">off</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="hot-cues">
+        <div className="label">Hot cues · 8 slots · live wiring TBD</div>
+        <div className="grid">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="cell">
+              {i + 1}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -198,167 +423,6 @@ function EqBand({ label, value }: { label: string; value: number }) {
   );
 }
 
-function DeckPanel({
-  side,
-  spinning,
-  onTogglePlay,
-  track,
-}: {
-  side: "a" | "b";
-  spinning: boolean;
-  onTogglePlay: () => void;
-  track: MockTrack;
-}) {
-  const isA = side === "a";
-  const accentLabel = isA ? "Deck A · active" : "Deck B · cueing";
-  const accentClass = isA ? "act-a" : "act-b";
-  const playClass = isA ? "play-a" : "play-b";
-  const ticks: number[] = [];
-  for (let i = 1; i < 12; i++) ticks.push(i * 8.3);
-  const pct = (track.position / track.duration) * 100;
-
-  return (
-    <div className={`deck ${side}`}>
-      <div
-        style={{
-          width: 320,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
-        }}
-      >
-        <span
-          style={{
-            fontSize: 10,
-            textTransform: "uppercase",
-            letterSpacing: "0.16em",
-            color: isA ? "var(--mint)" : "var(--violet)",
-          }}
-        >
-          {accentLabel}
-        </span>
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 10,
-            color: "var(--fg-4)",
-          }}
-        >
-          {spinning ? "▶ live" : "❚❚ paused"}
-        </span>
-      </div>
-
-      <Turntable deck={side} spinning={spinning} />
-
-      <div className="deck-meta">
-        <div className="title">{track.title}</div>
-        <div className="sub">{track.sub}</div>
-      </div>
-
-      <div className="deck-scrub">
-        <div className="bar">
-          <div className="fill" style={{ width: `${pct}%` }} />
-          <div className="ticks">
-            {ticks.map((p, i) => (
-              <div key={i} className="tk" style={{ left: `${p}%` }} />
-            ))}
-          </div>
-        </div>
-        <div className="times">
-          <span>{formatTime(track.position)}</span>
-          <span>{formatTime(track.duration)}</span>
-        </div>
-      </div>
-
-      <div className="deck-tp">
-        <button className={`btn ${accentClass}`} aria-label="Hot cue prev">⏮</button>
-        <button className={`btn ${accentClass}`} aria-label="Cue">⏯</button>
-        <button
-          className={`btn ${playClass}`}
-          onClick={onTogglePlay}
-          aria-label={spinning ? "Pause" : "Play"}
-        >
-          {spinning ? "❚❚" : "▶"}
-        </button>
-        <button className={`btn ${accentClass}`} aria-label="Loop">↻</button>
-        <button className={`btn ${accentClass}`} aria-label="Hot cue next">⏭</button>
-      </div>
-
-      <div className="deck-stats">
-        <div className="s"><div className="l">BPM</div><div className="v">{track.bpm}</div></div>
-        <div className="s"><div className="l">Tempo</div><div className="v">{track.tempo}</div></div>
-        <div className="s"><div className="l">Key</div><div className="v">{track.key}</div></div>
-        <div className="s"><div className="l">Cue</div><div className="v">{track.cue}</div></div>
-      </div>
-
-      <div className="deck-eq">
-        <div className="panel">
-          <div className="head">
-            <span className="name">EQ · 3-band</span>
-            <span className="v">
-              {track.eqLow > 0 ? "+" : ""}{track.eqLow.toFixed(1)}/
-              {track.eqMid > 0 ? "+" : ""}{track.eqMid.toFixed(1)}/
-              {track.eqHigh > 0 ? "+" : ""}{track.eqHigh.toFixed(1)}
-            </span>
-          </div>
-          <div className="eq3">
-            <EqBand label="Low" value={track.eqLow} />
-            <EqBand label="Mid" value={track.eqMid} />
-            <EqBand label="High" value={track.eqHigh} />
-          </div>
-        </div>
-        <div className="panel">
-          <div className="head">
-            <span className="name">LPF · cutoff</span>
-            <span className="v">
-              {track.filterHz >= 22000 ? "OPEN" : `${track.filterHz} Hz`}
-            </span>
-          </div>
-          <div
-            style={{
-              height: 4,
-              background: "var(--surface-3)",
-              borderRadius: 2,
-              marginTop: 2,
-              position: "relative",
-              boxShadow: "inset 0 1px 2px rgba(0,0,0,.5)",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: 0,
-                top: 0,
-                bottom: 0,
-                width: `${Math.min(100, (track.filterHz / 22050) * 100)}%`,
-                background: isA ? "var(--mint)" : "var(--violet)",
-                borderRadius: 2,
-              }}
-            />
-          </div>
-          <div className="head" style={{ marginTop: 14 }}>
-            <span className="name">Loop · 4 bar</span>
-            <span className="v">
-              {track.loopOn ? `ON @ ${track.loopStart}` : "off"}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="hot-cues">
-        <div className="label">Hot cues · 8 slots · tap empty to set, tap set to jump</div>
-        <div className="grid">
-          {track.hotCues.map((c, i) => (
-            <div key={i} className={"cell" + (c ? " set" : "")}>
-              {c || i + 1}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function Knob({ name, val, rot }: { name: string; val: string; rot: number }) {
   return (
     <div className="kstack">
@@ -376,6 +440,7 @@ function MixerColumn({
   crossfader,
   onCrossfader,
   activePreset,
+  matrixRunning,
   onPreset,
   beatHz,
   carrierHz,
@@ -386,8 +451,9 @@ function MixerColumn({
 }: {
   crossfader: number;
   onCrossfader: (v: number) => void;
-  activePreset: string;
-  onPreset: (id: string) => void;
+  activePreset: PresetId | null;
+  matrixRunning: boolean;
+  onPreset: (id: PresetId) => void;
   beatHz: number;
   carrierHz: number;
   bpmSync: number;
@@ -428,7 +494,7 @@ function MixerColumn({
             {bpmSync > 0 ? (
               <>gate <span className="v">{bpmSync} BPM</span></>
             ) : (
-              <>gate <span className="v">off</span></>
+              <>gate <span className="v">{matrixRunning ? "live" : "off"}</span></>
             )}
           </span>
         </div>
@@ -475,9 +541,16 @@ function MixerColumn({
       </div>
 
       <div className="preset-row">
-        <div className="label">Brainwave preset · 6 options</div>
+        <div className="label">
+          Brainwave preset · 6 options
+          {matrixRunning && (
+            <span style={{ color: "var(--mint)", marginLeft: 8 }}>
+              · matrix live
+            </span>
+          )}
+        </div>
         <div className="grid">
-          {PRESETS.map((p) => (
+          {CONSOLE_PRESETS.map((p) => (
             <button
               key={p.id}
               className={"pcard" + (p.id === activePreset ? " act" : "")}
@@ -507,78 +580,69 @@ function Manual() {
       <div className="group">
         <h4>① The turntables</h4>
         <p>
-          Two independent decks. Load any file you own — MP3, M4A, WAV, FLAC, OGG.
-          Stays on your device until you sign in.
+          Two independent decks. Click a turntable to load a file (MP3 / M4A /
+          WAV / FLAC / OGG). Stays on your device — no upload.
         </p>
-        <div className="step"><span className="n">A</span><span>Mint deck. Primary playback. Synced to the matrix BPM gate.</span></div>
-        <div className="step"><span className="n">B</span><span>Violet deck. Beat-matched to A. Use for transitions, layering, mashups.</span></div>
-        <div className="step"><span className="n">▶</span><span>Big play button starts the platter; the jog wheel spins. ❚❚ pauses.</span></div>
-        <div className="step"><span className="n">⏯</span><span>Cue: jump to the last hot cue, hold to preview.</span></div>
-        <div className="step"><span className="n">↻</span><span>Loop: re-trigger the current 4-bar segment from the in-point.</span></div>
+        <div className="step"><span className="n">A</span><span>Mint deck. Click to load. Play button spins the platter.</span></div>
+        <div className="step"><span className="n">B</span><span>Violet deck. Same flow. Both feed into the crossfader.</span></div>
+        <div className="step"><span className="n">▶</span><span>Big play button starts the audio + platter spin.</span></div>
+        <div className="step"><span className="n">⏮ ⏭</span><span>Skip back / forward 10 seconds.</span></div>
+        <div className="step"><span className="n">⏯</span><span>Jump to the start (cue point).</span></div>
       </div>
 
       <div className="group violet">
         <h4>② The mixer column</h4>
-        <p>Everything that mixes the two decks together — and the brain-state layer too.</p>
-        <div className="step"><span className="n">▮</span><span>Crossfader. Equal-power curve. Drag to mix A → B. Auto x-fade at 6s.</span></div>
-        <div className="step"><span className="n">◯</span><span>Gain · Mix · Drone · Noise. Four master rotaries.</span></div>
-        <div className="step"><span className="n">3-band</span><span>Per-deck low / mid / high cuts in dB. Double-click a band to zero it.</span></div>
-        <div className="step"><span className="n">LPF</span><span>Low-pass filter sweep. Click &quot;OPEN&quot; to bypass entirely.</span></div>
-        <div className="step"><span className="n">8 cue</span><span>Hot cues per deck. Tap empty to set, tap set to jump, × clears.</span></div>
+        <p>Where the two decks mix together, with the brain-state layer underneath.</p>
+        <div className="step"><span className="n">▮</span><span>Crossfader. Drag to balance A ↔ B. Updates djBus equal-power gains live.</span></div>
+        <div className="step"><span className="n">LPF</span><span>Per-deck low-pass cutoff. Drag the bar for the classic filter sweep.</span></div>
+        <div className="step"><span className="n">3-band</span><span>EQ readouts are visual for now — drag wiring TBD.</span></div>
+        <div className="step"><span className="n">Knobs</span><span>Master gain / mix / drone / noise — visual reference only.</span></div>
       </div>
 
       <div className="group">
         <h4>③ The brain matrix</h4>
-        <p>
-          Layered binaural / isochronic tones that ride underneath the music. Six
-          presets, one active at a time. Evidence-graded.
-        </p>
-        <div className="step"><span className="n">⚡</span><span><b>Desk Flow.</b> 40 Hz gamma boost · 14 Hz beat · 80 BPM gate. Strong evidence (MIT Tsai lab).</span></div>
-        <div className="step"><span className="n">🌴</span><span><b>Poolside.</b> 8 Hz alpha · 85 BPM. Mixed evidence.</span></div>
-        <div className="step"><span className="n">🌑</span><span><b>Archaic.</b> 110 Hz sub-bass · 7 Hz pulse · EMDR pan. Mixed evidence.</span></div>
-        <div className="step"><span className="n">🔥</span><span><b>Energy.</b> 18 Hz mid-beta · 95 BPM. Vibes only — admitted.</span></div>
+        <p>Layered binaural / isochronic tones that ride underneath the music. Click a preset to start; click again to stop.</p>
+        <div className="step"><span className="n">⚡</span><span><b>Desk Flow.</b> 40 Hz gamma · 14 Hz beat · 80 BPM gate.</span></div>
+        <div className="step"><span className="n">🌴</span><span><b>Poolside.</b> 8 Hz alpha · 85 BPM.</span></div>
+        <div className="step"><span className="n">🌑</span><span><b>Archaic.</b> 110 Hz sub · 7 Hz pulse · EMDR pan.</span></div>
+        <div className="step"><span className="n">🔥</span><span><b>Energy.</b> 18 Hz mid-beta · 95 BPM.</span></div>
       </div>
 
       <div className="group rose">
         <h4>④ Sessions &amp; recording</h4>
-        <p>Run a Pomodoro plan that auto-swaps presets at intervals. Record everything you mix.</p>
-        <div className="step"><span className="n">●</span><span>Hit Record to capture the master output as you mix. Stop saves it locally.</span></div>
-        <div className="step"><span className="n">☁</span><span>Sign in to save mixes to the cloud and get a public share URL.</span></div>
-        <div className="step"><span className="n">⌚</span><span>Sequencer: stack Focus / Rest steps, walk a plan automatically.</span></div>
-        <div className="step"><span className="n">🩺</span><span>The Engineer panel surfaces tips: &quot;mid clipping on A&quot;, &quot;try a 4-bar loop at 02:14&quot;.</span></div>
+        <p>Hit Record to capture the master output — the full mix, music + matrix together.</p>
+        <div className="step"><span className="n">●</span><span>Record uses MediaRecorder on the djBus tap. Stop downloads the file.</span></div>
+        <div className="step"><span className="n">☁</span><span>To save mixes to the cloud, use the mobile app at /.</span></div>
+        <div className="step"><span className="n">📊</span><span><Link href="/stats" style={{ color: "var(--mint)" }}>Stats</Link> page tallies your library and listening time.</span></div>
       </div>
     </section>
   );
 }
 
 function NowPlayingRail({
-  trackA,
-  trackB,
+  deckA,
+  deckB,
   crossfader,
-  playingA,
-  playingB,
   onTogglePlay,
 }: {
-  trackA: MockTrack;
-  trackB: MockTrack;
+  deckA: DeckState;
+  deckB: DeckState;
   crossfader: number;
-  playingA: boolean;
-  playingB: boolean;
   onTogglePlay: (side: "a" | "b") => void;
 }) {
   const primary: "a" | "b" = crossfader < 0.5 ? "a" : "b";
-  const track = primary === "a" ? trackA : trackB;
-  const playing = primary === "a" ? playingA : playingB;
+  const deck = primary === "a" ? deckA : deckB;
   const accent = primary === "a" ? "var(--mint)" : "var(--violet)";
+  const dur = deck.duration > 0 ? deck.duration : 1;
 
   return (
     <div className="console-rail">
       <div className="row">
         <div className="cover">♪</div>
         <div className="meta">
-          <div className="title">{track.title}</div>
+          <div className="title">{deck.name}</div>
           <div className="sub" style={{ color: accent }}>
-            {primary.toUpperCase()} · {track.bpm} BPM · {track.tempo}
+            {primary.toUpperCase()} · {deck.bpm ? `${deck.bpm} BPM` : "no BPM"}
           </div>
         </div>
         <div className="grow" style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -598,7 +662,7 @@ function NowPlayingRail({
                 left: 0,
                 top: 0,
                 bottom: 0,
-                width: `${(track.position / track.duration) * 100}%`,
+                width: `${(deck.position / dur) * 100}%`,
                 background: accent,
                 borderRadius: 2,
               }}
@@ -611,7 +675,7 @@ function NowPlayingRail({
               color: "var(--fg-4)",
             }}
           >
-            {formatTime(track.position)} / {formatTime(track.duration)}
+            {formatTime(deck.position)} / {formatTime(deck.duration)}
           </span>
         </div>
         <div className="tp">
@@ -619,9 +683,9 @@ function NowPlayingRail({
           <button
             className="play"
             onClick={() => onTogglePlay(primary)}
-            aria-label={playing ? "Pause" : "Play"}
+            aria-label={deck.playing ? "Pause" : "Play"}
           >
-            {playing ? "❚❚" : "▶"}
+            {deck.playing ? "❚❚" : "▶"}
           </button>
           <button aria-label="Next">⏭</button>
         </div>
@@ -631,7 +695,7 @@ function NowPlayingRail({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Local Tweaks panel (simplified — no host protocol)
+// Local Tweaks panel (simplified)
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Ambience = "none" | "glow" | "grid";
@@ -748,12 +812,21 @@ export default function ConsolePage() {
   const [tweaks, setTweaks] = useState<Tweaks>(TWEAK_DEFAULTS);
   const [tweaksOpen, setTweaksOpen] = useState(false);
   const [view, setView] = useState("Studio");
-  const [crossfader, setCrossfader] = useState(0.42);
-  const [activePreset, setActivePreset] = useState("deskflow");
+  const [crossfader, setCrossfader] = useState(0.5);
+  const [activePreset, setActivePreset] = useState<PresetId | null>(null);
+  const [matrixRunning, setMatrixRunning] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordElapsed, setRecordElapsed] = useState(0);
-  const [playingA, setPlayingA] = useState(true);
-  const [playingB, setPlayingB] = useState(false);
+
+  // Per-deck slot state + audio elements + file inputs.
+  const [deckA, setDeckA] = useState<DeckState>(EMPTY_DECK);
+  const [deckB, setDeckB] = useState<DeckState>(EMPTY_DECK);
+  const [filterA, setFilterA] = useState(22050);
+  const [filterB, setFilterB] = useState(22050);
+  const audioARef = useRef<HTMLAudioElement>(null);
+  const audioBRef = useRef<HTMLAudioElement>(null);
+  const fileARef = useRef<HTMLInputElement>(null);
+  const fileBRef = useRef<HTMLInputElement>(null);
 
   // Persist tweaks.
   useEffect(() => {
@@ -768,7 +841,7 @@ export default function ConsolePage() {
     } catch { /* ignore */ }
   }, [tweaks]);
 
-  // Apply spin speed + LCD color as CSS variables on document root.
+  // CSS var hooks for spin + LCD color.
   useEffect(() => {
     const r = document.documentElement;
     const dur =
@@ -787,21 +860,132 @@ export default function ConsolePage() {
     };
   }, [tweaks.spinSpeed, tweaks.lcdColor]);
 
-  // Recording timer tick.
+  // Recording timer.
   useEffect(() => {
     if (!recording) return;
     const id = window.setInterval(() => setRecordElapsed((x) => x + 1), 1000);
     return () => window.clearInterval(id);
   }, [recording]);
 
-  const togglePlay = (side: "a" | "b") => {
-    if (side === "a") setPlayingA((v) => !v);
-    else setPlayingB((v) => !v);
-  };
+  // Bind audio elements to djBus once they're available.
+  useEffect(() => {
+    djBus.ensureContext();
+    if (audioARef.current) {
+      try { djBus.ensureDeck("A", audioARef.current); } catch { /* already bound */ }
+    }
+    if (audioBRef.current) {
+      try { djBus.ensureDeck("B", audioBRef.current); } catch { /* already bound */ }
+    }
+  }, []);
+
+  // Apply crossfader to djBus whenever it changes.
+  useEffect(() => {
+    djBus.setCrossfader(crossfader);
+  }, [crossfader]);
+
+  // Apply LPF to djBus.
+  useEffect(() => {
+    djBus.setFilterCutoff("A", filterA);
+  }, [filterA]);
+  useEffect(() => {
+    djBus.setFilterCutoff("B", filterB);
+  }, [filterB]);
+
+  const loadFile = useCallback(
+    async (side: "a" | "b", file: File) => {
+      const setDeck = side === "a" ? setDeckA : setDeckB;
+      const url = URL.createObjectURL(file);
+      const el = side === "a" ? audioARef.current : audioBRef.current;
+      if (!el) return;
+      el.src = url;
+      el.currentTime = 0;
+      setDeck((cur) => {
+        // Revoke any previous blob URL.
+        if (cur.url) URL.revokeObjectURL(cur.url);
+        return {
+          url,
+          name: file.name.replace(/\.[^.]+$/, ""),
+          artist: `${(file.size / 1024 / 1024).toFixed(1)} MB · ${file.type || "audio"}`,
+          bpm: null,
+          position: 0,
+          duration: 0,
+          playing: false,
+        };
+      });
+    },
+    [],
+  );
+
+  const togglePlay = useCallback(async (side: "a" | "b") => {
+    const el = side === "a" ? audioARef.current : audioBRef.current;
+    const setDeck = side === "a" ? setDeckA : setDeckB;
+    if (!el) return;
+    djBus.resume();
+    if (el.paused) {
+      try {
+        await el.play();
+        setDeck((cur) => ({ ...cur, playing: true }));
+      } catch { /* autoplay or load not ready */ }
+    } else {
+      el.pause();
+      setDeck((cur) => ({ ...cur, playing: false }));
+    }
+  }, []);
+
+  const seekDeck = useCallback((side: "a" | "b", t: number) => {
+    const el = side === "a" ? audioARef.current : audioBRef.current;
+    if (!el) return;
+    el.currentTime = Math.max(0, t);
+  }, []);
+
+  // Preset card click: start/stop matrix engine.
+  const onPreset = useCallback(
+    (id: PresetId) => {
+      djBus.ensureContext();
+      djBus.resume();
+      if (activePreset === id && matrixRunning) {
+        stopEngine();
+        setMatrixRunning(false);
+        setActivePreset(null);
+        return;
+      }
+      if (matrixRunning) stopEngine();
+      const cfg = presetToEngineConfig(id);
+      const ctx = djBus.ensureContext();
+      const matrixInput = djBus.matrixInput;
+      startEngine(cfg, { ctx, destination: matrixInput ?? undefined });
+      setActivePreset(id);
+      setMatrixRunning(true);
+    },
+    [activePreset, matrixRunning],
+  );
+
+  // Recording via djBus.
+  const toggleRecord = useCallback(async () => {
+    if (recording) {
+      const result = await djBus.stopRecording();
+      setRecording(false);
+      setRecordElapsed(0);
+      if (result) {
+        downloadBlob(result.blob, `brainmix-${Date.now()}.${result.extension}`);
+      }
+    } else {
+      djBus.ensureContext();
+      djBus.resume();
+      const ok = djBus.startRecording();
+      if (ok) setRecording(true);
+    }
+  }, [recording]);
 
   const ambienceClass = tweaks.ambience !== "none" ? `amb-${tweaks.ambience}` : "";
   const consoleStyle =
     tweaks.deckCount === 1 ? { gridTemplateColumns: "1fr 420px" } : undefined;
+
+  // Convenient handle for the currently-active preset's beatHz for the LCD.
+  const presetCfg = activePreset ? PRESETS[activePreset] : null;
+  const lcdBeatHz = presetCfg?.params.beatHz ?? 14.0;
+  const lcdCarrier = presetCfg?.params.carrierHz ?? 200;
+  const lcdGate = presetCfg?.params.bpmSync ?? 0;
 
   return (
     <div className={`console-app ${ambienceClass}`}>
@@ -810,43 +994,96 @@ export default function ConsolePage() {
       <main className="console" style={consoleStyle}>
         <DeckPanel
           side="a"
-          spinning={playingA && tweaks.spinSpeed > 0}
+          spinning={deckA.playing && tweaks.spinSpeed > 0}
+          state={deckA}
+          filterHz={filterA}
           onTogglePlay={() => togglePlay("a")}
-          track={TRACK_A}
+          onLoad={() => fileARef.current?.click()}
+          onSeek={(t) => seekDeck("a", t)}
+          onFilter={setFilterA}
         />
         <MixerColumn
           crossfader={crossfader}
           onCrossfader={setCrossfader}
           activePreset={activePreset}
-          onPreset={setActivePreset}
-          beatHz={14.0}
-          carrierHz={200}
-          bpmSync={80}
+          matrixRunning={matrixRunning}
+          onPreset={onPreset}
+          beatHz={lcdBeatHz}
+          carrierHz={lcdCarrier}
+          bpmSync={lcdGate}
           recording={recording}
           recordElapsed={recordElapsed}
-          onToggleRecord={() => {
-            setRecording((r) => !r);
-            if (recording) setRecordElapsed(0);
-          }}
+          onToggleRecord={toggleRecord}
         />
         {tweaks.deckCount === 2 && (
           <DeckPanel
             side="b"
-            spinning={playingB && tweaks.spinSpeed > 0}
+            spinning={deckB.playing && tweaks.spinSpeed > 0}
+            state={deckB}
+            filterHz={filterB}
             onTogglePlay={() => togglePlay("b")}
-            track={TRACK_B}
+            onLoad={() => fileBRef.current?.click()}
+            onSeek={(t) => seekDeck("b", t)}
+            onFilter={setFilterB}
           />
         )}
       </main>
 
       {tweaks.showManual && <Manual />}
 
+      {/* Hidden audio elements (bound via djBus.ensureDeck). */}
+      <audio
+        ref={audioARef}
+        preload="metadata"
+        className="hidden"
+        onLoadedMetadata={(e) =>
+          setDeckA((d) => ({ ...d, duration: e.currentTarget.duration || 0 }))
+        }
+        onTimeUpdate={(e) =>
+          setDeckA((d) => ({ ...d, position: e.currentTarget.currentTime || 0 }))
+        }
+        onEnded={() => setDeckA((d) => ({ ...d, playing: false }))}
+      />
+      <audio
+        ref={audioBRef}
+        preload="metadata"
+        className="hidden"
+        onLoadedMetadata={(e) =>
+          setDeckB((d) => ({ ...d, duration: e.currentTarget.duration || 0 }))
+        }
+        onTimeUpdate={(e) =>
+          setDeckB((d) => ({ ...d, position: e.currentTarget.currentTime || 0 }))
+        }
+        onEnded={() => setDeckB((d) => ({ ...d, playing: false }))}
+      />
+      {/* Hidden file inputs */}
+      <input
+        ref={fileARef}
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) loadFile("a", f);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={fileBRef}
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) loadFile("b", f);
+          e.target.value = "";
+        }}
+      />
+
       <NowPlayingRail
-        trackA={TRACK_A}
-        trackB={TRACK_B}
+        deckA={deckA}
+        deckB={deckB}
         crossfader={crossfader}
-        playingA={playingA}
-        playingB={playingB}
         onTogglePlay={togglePlay}
       />
 
