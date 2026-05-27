@@ -6,6 +6,7 @@
  */
 
 import type { User } from "@supabase/supabase-js";
+import { BUNDLES, type MixBundle } from "@/lib/bundles";
 
 interface Props {
   user: User | null;
@@ -19,6 +20,7 @@ interface Props {
   onOpenMixes: () => void;
   onSignIn: () => void;
   onBulkImport: () => void;
+  onApplyBundle: (b: MixBundle) => void;
 }
 
 export function MusicHub({
@@ -33,6 +35,7 @@ export function MusicHub({
   onOpenMixes,
   onSignIn,
   onBulkImport,
+  onApplyBundle,
 }: Props) {
   return (
     <div className="space-y-4">
@@ -119,6 +122,37 @@ export function MusicHub({
           Open Library to pick something to play.
         </p>
       )}
+
+      {/* Vibe bundles — one-tap session plans with matrix + sequencer + pairing. */}
+      <section className="pt-4 border-t border-zinc-900">
+        <div className="flex justify-between items-baseline mb-2">
+          <h3 className="text-xs uppercase tracking-widest text-[#fb7185]">
+            Vibe bundles
+          </h3>
+          <span className="text-[10px] text-zinc-500">one tap → full session</span>
+        </div>
+        <div className="space-y-2">
+          {BUNDLES.map((b) => (
+            <button
+              key={b.id}
+              onClick={() => onApplyBundle(b)}
+              className="w-full text-left p-3 rounded-xl border border-zinc-800 bg-zinc-900/40 hover:border-[#fb7185]/40"
+            >
+              <div className="flex items-baseline gap-2">
+                <span className="text-lg">{b.emoji}</span>
+                <span className="text-sm text-zinc-100 font-medium">{b.name}</span>
+                <span className="ml-auto text-[10px] uppercase tracking-wider text-zinc-500 font-mono">
+                  {b.steps.reduce((s, x) => s + x.minutes, 0)} min · {b.steps.length} steps
+                </span>
+              </div>
+              <div className="text-[11px] text-zinc-400 mt-0.5">{b.tagline}</div>
+              <div className="text-[10px] text-zinc-500 mt-1 italic">
+                Pair with: {b.pairing}
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

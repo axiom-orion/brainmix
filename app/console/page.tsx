@@ -22,6 +22,7 @@ import {
   type EngineConfig,
 } from "@/lib/audioEngine";
 import { PRESETS, type PresetId } from "@/lib/presets";
+import { getSupabaseClient } from "@/lib/supabase/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slot state
@@ -36,16 +37,32 @@ interface DeckState {
   position: number;
   duration: number;
   playing: boolean;
+  /** EQ in dB, -15..+15. */
+  eqLow: number;
+  eqMid: number;
+  eqHigh: number;
+  /** Filter cutoff in Hz. 22050 = open. */
+  filterHz: number;
+  /** Playback rate 0.7..1.3 (preservesPitch). */
+  tempo: number;
+  /** 4 hot cues, position in seconds or null. */
+  hotCues: (number | null)[];
 }
 
 const EMPTY_DECK = (): DeckState => ({
   url: null,
   name: "— empty —",
-  artist: "Drop a file or click the deck",
+  artist: "Click the platter to load a file",
   bpm: null,
   position: 0,
   duration: 0,
   playing: false,
+  eqLow: 0,
+  eqMid: 0,
+  eqHigh: 0,
+  filterHz: 22050,
+  tempo: 1.0,
+  hotCues: [null, null, null, null],
 });
 
 interface ConsolePreset {
@@ -171,20 +188,28 @@ function DeckPanel({
   side,
   spinning,
   state,
-  filterHz,
   onTogglePlay,
   onLoad,
   onSeek,
   onFilter,
+  onEq,
+  onTempo,
+  onSetCue,
+  onJumpCue,
+  onClearCue,
 }: {
   side: "a" | "b";
   spinning: boolean;
   state: DeckState;
-  filterHz: number;
   onTogglePlay: () => void;
   onLoad: () => void;
   onSeek: (t: number) => void;
   onFilter: (hz: number) => void;
+  onEq: (band: "low" | "mid" | "high", db: number) => void;
+  onTempo: (rate: number) => void;
+  onSetCue: (idx: number) => void;
+  onJumpCue: (idx: number) => void;
+  onClearCue: (idx: number) => void;
 }) {
   const isA = side === "a";
   const accentLabel = state.url
@@ -319,22 +344,24 @@ function DeckPanel({
         <div className="panel">
           <div className="head">
             <span className="name">EQ · 3-band</span>
-            <span className="v">0.0/0.0/0.0</span>
+            <span className="v">
+              {fmtDb(state.eqLow)}/{fmtDb(state.eqMid)}/{fmtDb(state.eqHigh)}
+            </span>
           </div>
           <div className="eq3">
-            <EqBand label="Low" value={0} />
-            <EqBand label="Mid" value={0} />
-            <EqBand label="High" value={0} />
+            <EqBand label="Low" value={state.eqLow} onChange={(v) => onEq("low", v)} />
+            <EqBand label="Mid" value={state.eqMid} onChange={(v) => onEq("mid", v)} />
+            <EqBand label="High" value={state.eqHigh} onChange={(v) => onEq("high", v)} />
           </div>
         </div>
         <div className="panel">
           <div className="head">
             <span className="name">LPF · cutoff</span>
             <span className="v">
-              {filterHz >= 22000 ? "OPEN" : `${Math.round(filterHz)} Hz`}
+              {state.filterHz >= 22000 ? "OPEN" : `${Math.round(state.filterHz)} Hz`}
             </span>
           </div>
-          {/* Draggable LPF bar. Click anywhere to jump cutoff. */}
+          {/* Draggable LPF bar. Click/drag to set cutoff. */}
           <div
             onMouseDown={(e) => {
               const rail = e.currentTarget;
@@ -368,40 +395,110 @@ function DeckPanel({
                 left: 0,
                 top: 0,
                 bottom: 0,
-                width: `${Math.min(100, (filterHz / 22050) * 100)}%`,
+                width: `${Math.min(100, (state.filterHz / 22050) * 100)}%`,
                 background: isA ? "var(--mint)" : "var(--violet)",
                 borderRadius: 2,
               }}
             />
           </div>
+          {/* Tempo slider — 0.7×..1.3× with preservesPitch. */}
           <div className="head" style={{ marginTop: 14 }}>
-            <span className="name">Loop · 4 bar</span>
-            <span className="v">off</span>
+            <span className="name">Tempo</span>
+            <span className="v">{state.tempo.toFixed(2)}×</span>
           </div>
+          <input
+            type="range"
+            min={0.7}
+            max={1.3}
+            step={0.01}
+            value={state.tempo}
+            onChange={(e) => onTempo(parseFloat(e.target.value))}
+            style={{ width: "100%", marginTop: 4 }}
+          />
         </div>
       </div>
 
       <div className="hot-cues">
-        <div className="label">Hot cues · 8 slots · live wiring TBD</div>
-        <div className="grid">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="cell">
-              {i + 1}
-            </div>
-          ))}
+        <div className="label">
+          Hot cues · 4 · tap empty to set @ now, tap set to jump, long-press to clear
+        </div>
+        <div
+          className="grid"
+          style={{ gridTemplateColumns: "repeat(4, 1fr)" }}
+        >
+          {state.hotCues.map((cuePos, i) => {
+            const set = cuePos != null;
+            return (
+              <div
+                key={i}
+                className={"cell" + (set ? " set" : "")}
+                onClick={() => (set ? onJumpCue(i) : onSetCue(i))}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (set) onClearCue(i);
+                }}
+              >
+                {set ? formatTime(cuePos as number) : i + 1}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
   );
 }
 
-function EqBand({ label, value }: { label: string; value: number }) {
+function fmtDb(v: number): string {
+  return `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
+}
+
+/**
+ * EqBand — vertical -15..+15 dB. Drag the thumb (or anywhere on the track) to
+ * change the value. Double-click to zero. Calls onChange continuously.
+ */
+function EqBand({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
   const isPos = value >= 0;
   const pct = (Math.abs(value) / 15) * 50;
+  const startDrag = (e: React.MouseEvent) => {
+    const rail = (e.currentTarget as HTMLElement);
+    const rect = rail.getBoundingClientRect();
+    const apply = (clientY: number) => {
+      // 0 at center, top = +15, bottom = -15. Clamp.
+      const ratio = (clientY - rect.top) / rect.height; // 0..1, 0 = top
+      const v = (1 - ratio * 2) * 15; // 1 → -15, 0 → +15
+      onChange(Math.max(-15, Math.min(15, v)));
+    };
+    apply(e.clientY);
+    const move = (ev: MouseEvent) => apply(ev.clientY);
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
   return (
     <div className="band">
       <div className="name">{label}</div>
-      <div className="vert">
+      <div
+        className="vert"
+        onMouseDown={startDrag}
+        onDoubleClick={() => onChange(0)}
+        style={{ cursor: "ns-resize" }}
+        role="slider"
+        aria-label={`${label} band`}
+        aria-valuemin={-15}
+        aria-valuemax={15}
+        aria-valuenow={value}
+      >
         <div
           className="vf"
           style={
@@ -410,15 +507,9 @@ function EqBand({ label, value }: { label: string; value: number }) {
               : { top: "50%", height: `${pct}%` }
           }
         />
-        <div
-          className="vt"
-          style={{ top: `${isPos ? 50 - pct : 50 + pct - 9}%` }}
-        />
+        <div className="vt" style={{ top: `${isPos ? 50 - pct : 50 + pct - 9}%` }} />
       </div>
-      <div className="val">
-        {isPos ? "+" : ""}
-        {value.toFixed(1)}
-      </div>
+      <div className="val">{fmtDb(value)}</div>
     </div>
   );
 }
@@ -436,6 +527,59 @@ function Knob({ name, val, rot }: { name: string; val: string; rot: number }) {
   );
 }
 
+/**
+ * GainKnob — the only knob that's actually wired. Drag vertically to set
+ * master gain 0..1. Rotation reflects the value.
+ */
+function GainKnob({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  // Map 0..1 → -135° (low) .. +135° (high)
+  const rot = -135 + value * 270;
+  const startDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startV = value;
+    const move = (ev: MouseEvent) => {
+      // 200px of vertical motion = full range; up = increase
+      const dy = startY - ev.clientY;
+      onChange(Math.max(0, Math.min(1, startV + dy / 200)));
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+  return (
+    <div className="kstack">
+      <div
+        className="k-knob"
+        onMouseDown={startDrag}
+        onDoubleClick={() => onChange(1)}
+        style={
+          {
+            ["--rot" as string]: `${rot}deg`,
+            cursor: "ns-resize",
+          } as React.CSSProperties
+        }
+        role="slider"
+        aria-label="Master gain"
+        aria-valuemin={0}
+        aria-valuemax={1}
+        aria-valuenow={value}
+      />
+      <div className="name">Gain</div>
+      <div className="val">{value.toFixed(2)}</div>
+    </div>
+  );
+}
+
 function MixerColumn({
   crossfader,
   onCrossfader,
@@ -448,6 +592,9 @@ function MixerColumn({
   recording,
   recordElapsed,
   onToggleRecord,
+  masterGain,
+  onMasterGain,
+  listenerCount,
 }: {
   crossfader: number;
   onCrossfader: (v: number) => void;
@@ -460,6 +607,9 @@ function MixerColumn({
   recording: boolean;
   recordElapsed: number;
   onToggleRecord: () => void;
+  masterGain: number;
+  onMasterGain: (v: number) => void;
+  listenerCount: number;
 }) {
   const xfPct = (1 - crossfader) * 100;
   const knobLeft = `calc(${crossfader * 100}% - 18px)`;
@@ -534,11 +684,28 @@ function MixerColumn({
       </div>
 
       <div className="knobs">
-        <Knob name="Gain" val="0.62" rot={45} />
+        <GainKnob value={masterGain} onChange={onMasterGain} />
         <Knob name="Mix" val="50%" rot={-30} />
         <Knob name="Drone" val="0.18" rot={90} />
         <Knob name="Noise" val="brown" rot={-60} />
       </div>
+      {listenerCount > 1 && (
+        <div
+          style={{
+            padding: "6px 10px",
+            borderRadius: 6,
+            background: "var(--violet-10)",
+            border: "1px solid var(--violet-40)",
+            color: "var(--violet)",
+            fontSize: 10,
+            textTransform: "uppercase",
+            letterSpacing: "0.16em",
+            textAlign: "center",
+          }}
+        >
+          ● {listenerCount} listening · live
+        </div>
+      )}
 
       <div className="preset-row">
         <div className="label">
@@ -821,8 +988,8 @@ export default function ConsolePage() {
   // Per-deck slot state + audio elements + file inputs.
   const [deckA, setDeckA] = useState<DeckState>(EMPTY_DECK);
   const [deckB, setDeckB] = useState<DeckState>(EMPTY_DECK);
-  const [filterA, setFilterA] = useState(22050);
-  const [filterB, setFilterB] = useState(22050);
+  const [masterGain, setMasterGain] = useState(1);
+  const [listenerCount, setListenerCount] = useState(1);
   const audioARef = useRef<HTMLAudioElement>(null);
   const audioBRef = useRef<HTMLAudioElement>(null);
   const fileARef = useRef<HTMLInputElement>(null);
@@ -883,13 +1050,90 @@ export default function ConsolePage() {
     djBus.setCrossfader(crossfader);
   }, [crossfader]);
 
-  // Apply LPF to djBus.
+  // Apply per-deck LPF / EQ / tempo to djBus + audio element.
+  useEffect(() => { djBus.setFilterCutoff("A", deckA.filterHz); }, [deckA.filterHz]);
+  useEffect(() => { djBus.setFilterCutoff("B", deckB.filterHz); }, [deckB.filterHz]);
+  useEffect(() => { djBus.setEQ("A", "low", deckA.eqLow); }, [deckA.eqLow]);
+  useEffect(() => { djBus.setEQ("A", "mid", deckA.eqMid); }, [deckA.eqMid]);
+  useEffect(() => { djBus.setEQ("A", "high", deckA.eqHigh); }, [deckA.eqHigh]);
+  useEffect(() => { djBus.setEQ("B", "low", deckB.eqLow); }, [deckB.eqLow]);
+  useEffect(() => { djBus.setEQ("B", "mid", deckB.eqMid); }, [deckB.eqMid]);
+  useEffect(() => { djBus.setEQ("B", "high", deckB.eqHigh); }, [deckB.eqHigh]);
   useEffect(() => {
-    djBus.setFilterCutoff("A", filterA);
-  }, [filterA]);
+    if (audioARef.current) {
+      audioARef.current.playbackRate = deckA.tempo;
+      // preservesPitch isn't on all browsers; ts-ignore the assignment.
+      (audioARef.current as unknown as { preservesPitch?: boolean }).preservesPitch = true;
+    }
+  }, [deckA.tempo]);
   useEffect(() => {
-    djBus.setFilterCutoff("B", filterB);
-  }, [filterB]);
+    if (audioBRef.current) {
+      audioBRef.current.playbackRate = deckB.tempo;
+      (audioBRef.current as unknown as { preservesPitch?: boolean }).preservesPitch = true;
+    }
+  }, [deckB.tempo]);
+
+  // Master gain → djBus.
+  useEffect(() => { djBus.setMasterGain(masterGain); }, [masterGain]);
+
+  // Persist deck metadata + master gain across reloads.
+  const CONSOLE_STATE_KEY = "brainmix:console-decks";
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CONSOLE_STATE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as {
+        a?: Partial<DeckState>;
+        b?: Partial<DeckState>;
+        masterGain?: number;
+      };
+      // Don't restore url / playing — files don't survive reloads.
+      const restore = (s: Partial<DeckState>): Partial<DeckState> => ({
+        eqLow: s.eqLow,
+        eqMid: s.eqMid,
+        eqHigh: s.eqHigh,
+        filterHz: s.filterHz,
+        tempo: s.tempo,
+        hotCues: s.hotCues,
+      });
+      if (saved.a) setDeckA((d) => ({ ...d, ...restore(saved.a!) }));
+      if (saved.b) setDeckB((d) => ({ ...d, ...restore(saved.b!) }));
+      if (saved.masterGain != null) setMasterGain(saved.masterGain);
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        CONSOLE_STATE_KEY,
+        JSON.stringify({ a: deckA, b: deckB, masterGain }),
+      );
+    } catch { /* ignore */ }
+  }, [deckA, deckB, masterGain]);
+
+  // Listening-room presence via Supabase Realtime. Each visitor tracks a
+  // unique ephemeral key and we count the channel size. No audio relay yet —
+  // this is just "who else is here looking at the console".
+  useEffect(() => {
+    let mounted = true;
+    const sb = getSupabaseClient();
+    const channel = sb.channel("console-presence", {
+      config: { presence: { key: crypto.randomUUID() } },
+    });
+    channel.on("presence", { event: "sync" }, () => {
+      if (!mounted) return;
+      const state = channel.presenceState();
+      setListenerCount(Object.keys(state).length);
+    });
+    channel.subscribe((status: string) => {
+      if (status === "SUBSCRIBED") {
+        channel.track({ at: new Date().toISOString() }).catch(() => {});
+      }
+    });
+    return () => {
+      mounted = false;
+      channel.unsubscribe();
+    };
+  }, []);
 
   const loadFile = useCallback(
     async (side: "a" | "b", file: File) => {
@@ -900,9 +1144,10 @@ export default function ConsolePage() {
       el.src = url;
       el.currentTime = 0;
       setDeck((cur) => {
-        // Revoke any previous blob URL.
         if (cur.url) URL.revokeObjectURL(cur.url);
+        // Preserve EQ/filter/tempo/cues — only swap the file + transport.
         return {
+          ...cur,
           url,
           name: file.name.replace(/\.[^.]+$/, ""),
           artist: `${(file.size / 1024 / 1024).toFixed(1)} MB · ${file.type || "audio"}`,
@@ -910,6 +1155,8 @@ export default function ConsolePage() {
           position: 0,
           duration: 0,
           playing: false,
+          // Clear hot cues — they were timecodes for the previous track.
+          hotCues: [null, null, null, null],
         };
       });
     },
@@ -936,6 +1183,57 @@ export default function ConsolePage() {
     const el = side === "a" ? audioARef.current : audioBRef.current;
     if (!el) return;
     el.currentTime = Math.max(0, t);
+  }, []);
+
+  const setEq = useCallback(
+    (side: "a" | "b", band: "low" | "mid" | "high", db: number) => {
+      const setter = side === "a" ? setDeckA : setDeckB;
+      setter((d) => ({
+        ...d,
+        ...(band === "low" ? { eqLow: db } : band === "mid" ? { eqMid: db } : { eqHigh: db }),
+      }));
+    },
+    [],
+  );
+
+  const setTempo = useCallback((side: "a" | "b", rate: number) => {
+    const setter = side === "a" ? setDeckA : setDeckB;
+    setter((d) => ({ ...d, tempo: rate }));
+  }, []);
+
+  const setFilter = useCallback((side: "a" | "b", hz: number) => {
+    const setter = side === "a" ? setDeckA : setDeckB;
+    setter((d) => ({ ...d, filterHz: hz }));
+  }, []);
+
+  // Hot cues — store currentTime, jump to it, or clear.
+  const setCue = useCallback((side: "a" | "b", idx: number) => {
+    const el = side === "a" ? audioARef.current : audioBRef.current;
+    if (!el) return;
+    const t = el.currentTime;
+    const setter = side === "a" ? setDeckA : setDeckB;
+    setter((d) => {
+      const cues = [...d.hotCues];
+      cues[idx] = t;
+      return { ...d, hotCues: cues };
+    });
+  }, []);
+
+  const jumpCue = useCallback((side: "a" | "b", idx: number) => {
+    const el = side === "a" ? audioARef.current : audioBRef.current;
+    if (!el) return;
+    const deck = side === "a" ? deckA : deckB;
+    const t = deck.hotCues[idx];
+    if (t != null) el.currentTime = t;
+  }, [deckA, deckB]);
+
+  const clearCue = useCallback((side: "a" | "b", idx: number) => {
+    const setter = side === "a" ? setDeckA : setDeckB;
+    setter((d) => {
+      const cues = [...d.hotCues];
+      cues[idx] = null;
+      return { ...d, hotCues: cues };
+    });
   }, []);
 
   // Preset card click: start/stop matrix engine.
@@ -996,11 +1294,15 @@ export default function ConsolePage() {
           side="a"
           spinning={deckA.playing && tweaks.spinSpeed > 0}
           state={deckA}
-          filterHz={filterA}
           onTogglePlay={() => togglePlay("a")}
           onLoad={() => fileARef.current?.click()}
           onSeek={(t) => seekDeck("a", t)}
-          onFilter={setFilterA}
+          onFilter={(hz) => setFilter("a", hz)}
+          onEq={(band, db) => setEq("a", band, db)}
+          onTempo={(r) => setTempo("a", r)}
+          onSetCue={(i) => setCue("a", i)}
+          onJumpCue={(i) => jumpCue("a", i)}
+          onClearCue={(i) => clearCue("a", i)}
         />
         <MixerColumn
           crossfader={crossfader}
@@ -1014,17 +1316,24 @@ export default function ConsolePage() {
           recording={recording}
           recordElapsed={recordElapsed}
           onToggleRecord={toggleRecord}
+          masterGain={masterGain}
+          onMasterGain={setMasterGain}
+          listenerCount={listenerCount}
         />
         {tweaks.deckCount === 2 && (
           <DeckPanel
             side="b"
             spinning={deckB.playing && tweaks.spinSpeed > 0}
             state={deckB}
-            filterHz={filterB}
             onTogglePlay={() => togglePlay("b")}
             onLoad={() => fileBRef.current?.click()}
             onSeek={(t) => seekDeck("b", t)}
-            onFilter={setFilterB}
+            onFilter={(hz) => setFilter("b", hz)}
+            onEq={(band, db) => setEq("b", band, db)}
+            onTempo={(r) => setTempo("b", r)}
+            onSetCue={(i) => setCue("b", i)}
+            onJumpCue={(i) => jumpCue("b", i)}
+            onClearCue={(i) => clearCue("b", i)}
           />
         )}
       </main>

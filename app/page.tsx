@@ -63,6 +63,7 @@ import {
 import { DeepDiveModal, AcademyModal } from "./components/AcademyModal";
 import { parseMetadata, guessFromFilename } from "@/lib/idTags";
 import { walkEntriesForAudio } from "@/lib/dropFolders";
+import type { MixBundle } from "@/lib/bundles";
 import {
   setMediaMetadata,
   bindMediaActions,
@@ -1790,6 +1791,21 @@ export default function Home() {
             onOpenMixes={() => setMixesOpen(true)}
             onSignIn={() => setSignInOpen(true)}
             onBulkImport={() => bulkInputRef.current?.click()}
+            onApplyBundle={(b: MixBundle) => {
+              // Load the bundle's first preset immediately, build the plan from
+              // its steps, switch to Studio so the user sees what just landed.
+              setPlan(
+                b.steps.map((s) => ({
+                  id: crypto.randomUUID(),
+                  presetId: s.presetId,
+                  minutes: s.minutes,
+                  trackId: null,
+                })),
+              );
+              const first = PRESETS[b.steps[0].presetId];
+              if (first) setState(presetToState(first));
+              setAppView("studio");
+            }}
           />
         )}
 
