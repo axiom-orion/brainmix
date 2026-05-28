@@ -15,6 +15,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { use } from "react";
 import { joinListener, type ListenerHandle } from "@/lib/liveRoom";
+import { getSupabaseClient } from "@/lib/supabase/client";
+import { LiveChat } from "@/app/components/LiveChat";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -24,8 +26,37 @@ export default function LiveListenerPage({ params }: Props) {
   const { token } = use(params);
   const [state, setState] = useState<ListenerHandle | null>(null);
   const [volume, setVolume] = useState(0.85);
+  const [roomMeta, setRoomMeta] = useState<{ name: string; isActive: boolean } | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const stopRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Look up the room row (if any) so we can show is_active state.
+  useEffect(() => {
+    const sb = getSupabaseClient();
+    sb.from("live_rooms")
+      .select("name, is_active")
+      .eq("token", token)
+      .maybeSingle()
+      .then((r: { data: { name: string; is_active: boolean } | null }) => {
+        if (r.data) {
+          setRoomMeta({ name: r.data.name, isActive: r.data.is_active });
+        }
+      });
+    // Realtime: refresh when the row changes (host starts/stops).
+    const channel = sb
+      .channel(`live-room-meta-${token}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "live_rooms", filter: `token=eq.${token}` },
+        (payload: { new: { name: string; is_active: boolean } }) => {
+          setRoomMeta({ name: payload.new.name, isActive: payload.new.is_active });
+        },
+      )
+      .subscribe();
+    return () => {
+      channel.unsubscribe();
+    };
+  }, [token]);
 
   useEffect(() => {
     const handle = joinListener(token, (s) => setState(s));
@@ -73,11 +104,22 @@ export default function LiveListenerPage({ params }: Props) {
         </Link>
 
         <h1 className="text-2xl md:text-3xl font-light tracking-tight mt-6 mb-2">
-          Listening room
+          {roomMeta?.name ?? "Listening room"}
         </h1>
-        <p className="text-[11px] uppercase tracking-widest text-zinc-500 font-mono mb-8">
+        <p className="text-[11px] uppercase tracking-widest text-zinc-500 font-mono mb-2">
           Token · {token}
         </p>
+        {roomMeta && !roomMeta.isActive && (
+          <p className="text-xs text-amber-400 mb-8">
+            Host is offline. The room will reactivate when they start
+            broadcasting again.
+          </p>
+        )}
+        {!roomMeta && (
+          <p className="text-xs text-zinc-600 mb-8">
+            Unregistered room — anyone hosting this token will reach you.
+          </p>
+        )}
 
         {/* Status pill */}
         <div
@@ -167,6 +209,7 @@ export default function LiveListenerPage({ params }: Props) {
 
         <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
       </div>
+      <LiveChat token={token} />
     </div>
   );
 }

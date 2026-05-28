@@ -15,10 +15,27 @@
 import { getSupabaseClient } from "./supabase/client";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
-const STUN_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-];
+/**
+ * ICE servers — STUN always, plus TURN if NEXT_PUBLIC_TURN_URL is set. Without
+ * TURN, listeners behind symmetric NAT / strict firewalls won't connect.
+ * Configure all three for TURN auth: NEXT_PUBLIC_TURN_URL,
+ * NEXT_PUBLIC_TURN_USERNAME, NEXT_PUBLIC_TURN_CREDENTIAL.
+ */
+function iceServers(): RTCIceServer[] {
+  const stun: RTCIceServer[] = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ];
+  const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+  if (turnUrl) {
+    stun.push({
+      urls: turnUrl,
+      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
+    });
+  }
+  return stun;
+}
 
 type SignalingMessage =
   | { kind: "listener-joined"; from: string }
@@ -63,7 +80,7 @@ export async function startHost(stream: MediaStream): Promise<HostHandle> {
     channel.send({ type: "broadcast", event: "signal", payload: msg });
 
   const newPeer = (listenerId: string): RTCPeerConnection => {
-    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    const pc = new RTCPeerConnection({ iceServers: iceServers() });
     for (const track of stream.getTracks()) {
       pc.addTrack(track, stream);
     }
@@ -170,7 +187,7 @@ export function joinListener(
     config: { broadcast: { self: false } },
   });
 
-  const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers: iceServers() });
   let hostId: string | null = null;
   let audioStream: MediaStream | null = null;
   let connectionState: RTCPeerConnectionState | "joining" = "joining";

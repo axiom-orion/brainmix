@@ -15,6 +15,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { djBus } from "@/lib/djBus";
 import { startHost, type HostHandle } from "@/lib/liveRoom";
+import { getSupabaseClient } from "@/lib/supabase/client";
+import { LiveChat } from "@/app/components/LiveChat";
 
 export default function LiveHostPage() {
   const [handle, setHandle] = useState<HostHandle | null>(null);
@@ -44,7 +46,31 @@ export default function LiveHostPage() {
       }
       const h = await startHost(tap.stream);
       handleRef.current = h;
-      h.onListenersChange(setListeners);
+      h.onListenersChange((n) => {
+        setListeners(n);
+        // Best-effort liveness update — won't fail the broadcast if RLS rejects.
+        getSupabaseClient()
+          .from("live_rooms")
+          .update({ listener_count: n, last_active_at: new Date().toISOString() })
+          .eq("token", h.token)
+          .then(() => {});
+      });
+      // Try to persist the room. Anonymous users skip — INSERT requires auth.
+      const sb = getSupabaseClient();
+      const { data: userData } = await sb.auth.getUser();
+      if (userData?.user) {
+        await sb.from("live_rooms").upsert(
+          {
+            token: h.token,
+            host_user_id: userData.user.id,
+            name: `Session ${new Date().toLocaleString()}`,
+            is_active: true,
+            listener_count: 0,
+            last_active_at: new Date().toISOString(),
+          },
+          { onConflict: "token" },
+        );
+      }
       setHandle(h);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start broadcast");
@@ -55,10 +81,17 @@ export default function LiveHostPage() {
 
   const onStop = useCallback(async () => {
     if (!handleRef.current) return;
+    const token = handleRef.current.token;
     await handleRef.current.stop();
     handleRef.current = null;
     setHandle(null);
     setListeners(0);
+    // Mark inactive in the DB. Anonymous host has no row, no-op.
+    getSupabaseClient()
+      .from("live_rooms")
+      .update({ is_active: false, last_active_at: new Date().toISOString() })
+      .eq("token", token)
+      .then(() => {});
   }, []);
 
   const shareUrl = handle
@@ -143,6 +176,8 @@ export default function LiveHostPage() {
         {error && (
           <p className="mt-4 text-xs text-rose-400 leading-relaxed">{error}</p>
         )}
+
+        {handle && <LiveChat token={handle.token} />}
 
         <div className="mt-12 p-4 rounded-xl border border-zinc-800 bg-zinc-950/40 text-xs text-zinc-500 leading-relaxed">
           <p className="mb-2">

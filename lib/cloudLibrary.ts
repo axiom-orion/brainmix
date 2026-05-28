@@ -204,6 +204,19 @@ export async function deleteCloudTrack(track: CloudTrack): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+/** Persist hot cues for a track. Pass the 4-cue array (positions in seconds or null). */
+export async function updateTrackHotCues(
+  id: string,
+  hotCues: (number | null)[],
+): Promise<void> {
+  const sb = getSupabaseClient();
+  const { error } = await sb
+    .from("tracks")
+    .update({ hot_cues: hotCues })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 export async function updateTrackMetadata(
   id: string,
   patch: {

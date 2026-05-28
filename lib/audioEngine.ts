@@ -60,6 +60,8 @@ interface ActiveNodes {
   master: GainNode;
   /** True when ctx was supplied externally (e.g. by DJBus) - do not close on stop. */
   externalCtx: boolean;
+  /** Snapshot of the config the engine was started with. Mutated by live setters. */
+  config?: EngineConfig;
   // Entrainment - binaural
   binauralL?: OscillatorNode;
   binauralR?: OscillatorNode;
@@ -366,7 +368,7 @@ export function start(cfg: EngineConfig, opts?: StartOptions) {
   master.gain.linearRampToValueAtTime(cfg.masterGain, ctx.currentTime + RAMP);
   master.connect(opts?.destination ?? ctx.destination);
 
-  const nodes: ActiveNodes = { ctx, master, externalCtx, droneOscs: [] };
+  const nodes: ActiveNodes = { ctx, master, externalCtx, droneOscs: [], config: { ...cfg } };
 
   startEntrainment(ctx, master, cfg, nodes);
   if (cfg.gammaBoost) startGammaBoost(ctx, master, cfg, nodes);
@@ -402,6 +404,82 @@ export function setNoiseGain(gain: number) {
 /** Returns whether the matrix engine is currently running. */
 export function isRunning(): boolean {
   return active !== null;
+}
+
+/** Returns the active engine config (shallow copy) or null. */
+export function currentConfig(): EngineConfig | null {
+  return active?.config ? { ...active.config } : null;
+}
+
+/**
+ * Live setter for the entrainment beat frequency.
+ * Smoothly ramps the relevant oscillators / LFOs to the new rate.
+ */
+export function setBeatHz(hz: number) {
+  if (!active) return;
+  const { ctx } = active;
+  const t = ctx.currentTime;
+  // Binaural: shift the right ear by ±beatHz from carrier.
+  if (active.binauralL && active.binauralR && active.config) {
+    active.binauralR.frequency.cancelScheduledValues(t);
+    active.binauralR.frequency.linearRampToValueAtTime(
+      active.config.carrierHz + hz,
+      t + 0.15,
+    );
+  }
+  // Isochronic: the gating LFO runs at beatHz.
+  if (active.isoLfo) {
+    active.isoLfo.frequency.cancelScheduledValues(t);
+    active.isoLfo.frequency.linearRampToValueAtTime(hz, t + 0.15);
+  }
+  if (active.config) active.config.beatHz = hz;
+}
+
+/**
+ * Live setter for the audible carrier frequency. Drift smoothly so the
+ * pitch change doesn't click.
+ */
+export function setCarrierHz(hz: number) {
+  if (!active) return;
+  const { ctx } = active;
+  const t = ctx.currentTime;
+  if (active.binauralL) {
+    active.binauralL.frequency.cancelScheduledValues(t);
+    active.binauralL.frequency.linearRampToValueAtTime(hz, t + 0.15);
+  }
+  if (active.binauralR && active.config) {
+    active.binauralR.frequency.cancelScheduledValues(t);
+    active.binauralR.frequency.linearRampToValueAtTime(
+      hz + active.config.beatHz,
+      t + 0.15,
+    );
+  }
+  if (active.isoCarrier) {
+    active.isoCarrier.frequency.cancelScheduledValues(t);
+    active.isoCarrier.frequency.linearRampToValueAtTime(hz, t + 0.15);
+  }
+  if (active.config) active.config.carrierHz = hz;
+}
+
+/**
+ * Smooth restart: fade-out the existing engine, swap to a new config, fade in.
+ * Use when changes can't be applied live (mode swap, gammaBoost toggle,
+ * bpmSync change — all require oscillator topology changes).
+ */
+export async function smoothRestart(cfg: EngineConfig, opts?: StartOptions) {
+  if (!active) {
+    start(cfg, opts);
+    return;
+  }
+  // Fade the current master to 0 over a short ramp.
+  const { ctx, master } = active;
+  const t = ctx.currentTime;
+  master.gain.cancelScheduledValues(t);
+  master.gain.linearRampToValueAtTime(0, t + 0.3);
+  // Wait for the fade, then stop + start fresh.
+  await new Promise((r) => setTimeout(r, 320));
+  stop();
+  start(cfg, opts);
 }
 
 /**

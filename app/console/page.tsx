@@ -19,6 +19,7 @@ import { djBus, downloadBlob } from "@/lib/djBus";
 import {
   start as startEngine,
   stop as stopEngine,
+  smoothRestart,
   setDroneGain,
   setNoiseGain,
   type EngineConfig,
@@ -28,6 +29,7 @@ import { getSupabaseClient } from "@/lib/supabase/client";
 import {
   listCloudTracks,
   downloadTrack,
+  updateTrackHotCues,
   type CloudTrack,
 } from "@/lib/cloudLibrary";
 import { writeSlots, subscribeSlots, readSlots } from "@/lib/routeSync";
@@ -55,6 +57,8 @@ interface DeckState {
   tempo: number;
   /** 4 hot cues, position in seconds or null. */
   hotCues: (number | null)[];
+  /** When loaded from the cloud library, the track id (for persisting cues). */
+  cloudTrackId: string | null;
 }
 
 const EMPTY_DECK = (): DeckState => ({
@@ -71,6 +75,7 @@ const EMPTY_DECK = (): DeckState => ({
   filterHz: 22050,
   tempo: 1.0,
   hotCues: [null, null, null, null],
+  cloudTrackId: null,
 });
 
 interface ConsolePreset {
@@ -1235,6 +1240,7 @@ export default function ConsolePage() {
           duration: 0,
           playing: false,
           hotCues: [null, null, null, null],
+          cloudTrackId: null,
         };
       });
     },
@@ -1253,6 +1259,11 @@ export default function ConsolePage() {
         if (!el) return;
         el.src = url;
         el.currentTime = 0;
+        // Restore the 4 hot cues from the cloud row (pad/truncate to exactly 4).
+        const restoredCues: (number | null)[] = [null, null, null, null];
+        (track.hotCues ?? []).slice(0, 4).forEach((c, i) => {
+          if (typeof c === "number") restoredCues[i] = c;
+        });
         setDeck((cur) => {
           if (cur.url) URL.revokeObjectURL(cur.url);
           return {
@@ -1264,7 +1275,8 @@ export default function ConsolePage() {
             position: 0,
             duration: 0,
             playing: false,
-            hotCues: [null, null, null, null],
+            hotCues: restoredCues,
+            cloudTrackId: track.id,
           };
         });
         // Broadcast to other tabs.
@@ -1360,6 +1372,23 @@ export default function ConsolePage() {
     setter((d) => ({ ...d, filterHz: hz }));
   }, []);
 
+  // Persist cue arrays to Supabase when they change on a cloud-loaded track.
+  // Debounce slightly so a flurry of set/clear/set doesn't spam the network.
+  useEffect(() => {
+    if (!deckA.cloudTrackId) return;
+    const id = window.setTimeout(() => {
+      updateTrackHotCues(deckA.cloudTrackId!, deckA.hotCues).catch(() => {});
+    }, 500);
+    return () => window.clearTimeout(id);
+  }, [deckA.cloudTrackId, deckA.hotCues]);
+  useEffect(() => {
+    if (!deckB.cloudTrackId) return;
+    const id = window.setTimeout(() => {
+      updateTrackHotCues(deckB.cloudTrackId!, deckB.hotCues).catch(() => {});
+    }, 500);
+    return () => window.clearTimeout(id);
+  }, [deckB.cloudTrackId, deckB.hotCues]);
+
   // Hot cues — store currentTime, jump to it, or clear.
   const setCue = useCallback((side: "a" | "b", idx: number) => {
     const el = side === "a" ? audioARef.current : audioBRef.current;
@@ -1390,22 +1419,27 @@ export default function ConsolePage() {
     });
   }, []);
 
-  // Preset card click: start/stop matrix engine.
+  // Preset card click: start / smoothly transition / stop.
   const onPreset = useCallback(
-    (id: PresetId) => {
+    async (id: PresetId) => {
       djBus.ensureContext();
       djBus.resume();
+      // Click the active preset to stop.
       if (activePreset === id && matrixRunning) {
         stopEngine();
         setMatrixRunning(false);
         setActivePreset(null);
         return;
       }
-      if (matrixRunning) stopEngine();
       const cfg = presetToEngineConfig(id);
       const ctx = djBus.ensureContext();
       const matrixInput = djBus.matrixInput;
-      startEngine(cfg, { ctx, destination: matrixInput ?? undefined });
+      if (matrixRunning) {
+        // Smooth crossfade restart so the swap doesn't click.
+        await smoothRestart(cfg, { ctx, destination: matrixInput ?? undefined });
+      } else {
+        startEngine(cfg, { ctx, destination: matrixInput ?? undefined });
+      }
       setActivePreset(id);
       setMatrixRunning(true);
     },

@@ -59,7 +59,12 @@ test.describe("BrainMix smoke", () => {
 
   test("/live/[token] listener page renders", async ({ page }) => {
     await page.goto("/live/test-token");
-    await expect(page.getByText(/Listening room/i)).toBeVisible();
     await expect(page.getByText(/Token · test-token/i)).toBeVisible();
+  });
+
+  test("/about renders the public marketing page", async ({ page }) => {
+    await page.goto("/about");
+    await expect(page.getByText(/Layered brainwave entrainment/i)).toBeVisible();
+    await expect(page.getByRole("link", { name: /Open the app/i }).first()).toBeVisible();
   });
 });
