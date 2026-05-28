@@ -462,6 +462,81 @@ export function setCarrierHz(hz: number) {
 }
 
 /**
+ * Live setter for the gamma-boost layer. Creates/destroys the 40 Hz
+ * isochronic stack on the fly. Smooth: fades the out-going stack to zero
+ * before destroying, ramps the new stack up.
+ */
+export function setGammaBoost(on: boolean) {
+  if (!active || !active.config) return;
+  const ctx = active.ctx;
+  const t = ctx.currentTime;
+
+  if (on && !active.gammaGate) {
+    // Spin up.
+    startGammaBoost(ctx, active.master, active.config, active);
+    active.config.gammaBoost = true;
+  } else if (!on && active.gammaGate) {
+    // Ramp down, then disconnect.
+    const out = active.gammaGate;
+    out.gain.cancelScheduledValues(t);
+    out.gain.linearRampToValueAtTime(0, t + 0.25);
+    const { gammaCarrier, gammaLfo, gammaBpmLfo } = active;
+    window.setTimeout(() => {
+      try { gammaCarrier?.stop(); gammaCarrier?.disconnect(); } catch {}
+      try { gammaLfo?.stop(); gammaLfo?.disconnect(); } catch {}
+      try { gammaBpmLfo?.stop(); gammaBpmLfo?.disconnect(); } catch {}
+      try { out.disconnect(); } catch {}
+    }, 280);
+    active.gammaCarrier = undefined;
+    active.gammaLfo = undefined;
+    active.gammaLfoGain = undefined;
+    active.gammaGate = undefined;
+    active.gammaBpmLfo = undefined;
+    active.gammaBpmLfoGain = undefined;
+    active.config.gammaBoost = false;
+  }
+}
+
+/**
+ * Live setter for BPM gating on the gamma layer. Attaches or detaches the
+ * BPM-synced amplitude LFO without restarting the whole gamma stack.
+ */
+export function setBpmSync(bpm: number) {
+  if (!active || !active.config) return;
+  const ctx = active.ctx;
+  const t = ctx.currentTime;
+
+  if (active.gammaBpmLfo && active.gammaBpmLfoGain) {
+    if (bpm > 0) {
+      // Just retune the LFO to the new BPM.
+      const beatsPerSec = bpm / 60;
+      active.gammaBpmLfo.frequency.cancelScheduledValues(t);
+      active.gammaBpmLfo.frequency.linearRampToValueAtTime(beatsPerSec * 2, t + 0.1);
+    } else {
+      // Tear down — disconnect the LFO from out.gain.
+      try { active.gammaBpmLfo.stop(); active.gammaBpmLfo.disconnect(); } catch {}
+      try { active.gammaBpmLfoGain.disconnect(); } catch {}
+      active.gammaBpmLfo = undefined;
+      active.gammaBpmLfoGain = undefined;
+    }
+  } else if (bpm > 0 && active.gammaGate) {
+    // Spin up a fresh BPM LFO if we don't have one but gamma is running.
+    const beatsPerSec = bpm / 60;
+    const bpmLfo = ctx.createOscillator();
+    bpmLfo.type = "sine";
+    bpmLfo.frequency.value = beatsPerSec * 2;
+    const bpmLfoGain = ctx.createGain();
+    bpmLfoGain.gain.value = 0.5;
+    bpmLfo.connect(bpmLfoGain).connect(active.gammaGate.gain);
+    bpmLfo.start();
+    active.gammaBpmLfo = bpmLfo;
+    active.gammaBpmLfoGain = bpmLfoGain;
+  }
+
+  active.config.bpmSync = bpm;
+}
+
+/**
  * Smooth restart: fade-out the existing engine, swap to a new config, fade in.
  * Use when changes can't be applied live (mode swap, gammaBoost toggle,
  * bpmSync change — all require oscillator topology changes).

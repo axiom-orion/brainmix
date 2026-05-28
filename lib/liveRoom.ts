@@ -12,29 +12,80 @@
  * for an MVP; document it in the UI.
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { getSupabaseClient } from "./supabase/client";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
+/** Tag every WebRTC breadcrumb so Sentry can filter the listening-room domain. */
+function trace(message: string, data?: Record<string, unknown>) {
+  Sentry.addBreadcrumb({
+    category: "live-room",
+    message,
+    level: "info",
+    data,
+  });
+}
+
+function captureFault(message: string, err?: unknown, extra?: Record<string, unknown>) {
+  // Use captureException when we have an Error, captureMessage otherwise.
+  if (err instanceof Error) {
+    Sentry.captureException(err, { extra: { domain: "live-room", message, ...extra } });
+  } else {
+    Sentry.captureMessage(message, { level: "warning", extra: { domain: "live-room", ...extra } });
+  }
+}
+
 /**
- * ICE servers — STUN always, plus TURN if NEXT_PUBLIC_TURN_URL is set. Without
- * TURN, listeners behind symmetric NAT / strict firewalls won't connect.
- * Configure all three for TURN auth: NEXT_PUBLIC_TURN_URL,
- * NEXT_PUBLIC_TURN_USERNAME, NEXT_PUBLIC_TURN_CREDENTIAL.
+ * ICE servers configuration. Three tiers, in order of preference:
+ *
+ *   1. STUN — always. Free, public. Resolves your own IP for ICE candidates.
+ *      Sufficient for ~80% of peer connections (non-symmetric-NAT networks).
+ *
+ *   2. Custom TURN — set NEXT_PUBLIC_TURN_URL / _USERNAME / _CREDENTIAL via
+ *      Vercel env vars. Use Cloudflare Calls (free up to 1000 GB/month) or
+ *      Twilio TURN (~$0.40/GB) for production. Required for ~20% of users
+ *      behind symmetric NAT / strict corporate firewalls.
+ *
+ *   3. Open-relay fallback — metered.ca's free public TURN. Throttled but
+ *      keeps the demo working without any setup. Enabled by default.
+ *
+ * Cloudflare TURN setup (recommended):
+ *   1. https://dash.cloudflare.com/?to=/:account/calls → New TURN app
+ *   2. Generate credentials → copy URL + username + credential
+ *   3. vercel env add NEXT_PUBLIC_TURN_URL production       (paste turn:...)
+ *   4. vercel env add NEXT_PUBLIC_TURN_USERNAME production
+ *   5. vercel env add NEXT_PUBLIC_TURN_CREDENTIAL production
+ *   6. Redeploy.
  */
 function iceServers(): RTCIceServer[] {
-  const stun: RTCIceServer[] = [
+  const servers: RTCIceServer[] = [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
   ];
   const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
   if (turnUrl) {
-    stun.push({
+    servers.push({
       urls: turnUrl,
       username: process.env.NEXT_PUBLIC_TURN_USERNAME,
       credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
     });
+  } else {
+    // Open-relay free public TURN — rate-limited but lets the demo work
+    // without per-user setup. Replace with your own service for production.
+    servers.push(
+      {
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+    );
   }
-  return stun;
+  return servers;
 }
 
 type SignalingMessage =
@@ -66,6 +117,7 @@ export interface HostHandle {
 export async function startHost(stream: MediaStream): Promise<HostHandle> {
   const token = makeId().slice(0, 8);
   const hostId = makeId();
+  trace("host:start", { token, tracks: stream.getTracks().length });
   const sb = getSupabaseClient();
   const channel = sb.channel(`live-${token}`, {
     config: { broadcast: { self: false } },
@@ -95,6 +147,10 @@ export async function startHost(stream: MediaStream): Promise<HostHandle> {
       }
     };
     pc.onconnectionstatechange = () => {
+      trace("host:peer-state", { listenerId, state: pc.connectionState });
+      if (pc.connectionState === "failed") {
+        captureFault("host: peer connection failed", undefined, { listenerId });
+      }
       if (
         pc.connectionState === "disconnected" ||
         pc.connectionState === "failed" ||
@@ -103,6 +159,11 @@ export async function startHost(stream: MediaStream): Promise<HostHandle> {
         peers.delete(listenerId);
         try { pc.close(); } catch {}
         notify();
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === "failed") {
+        captureFault("host: ICE failed", undefined, { listenerId });
       }
     };
     peers.set(listenerId, pc);
@@ -114,31 +175,35 @@ export async function startHost(stream: MediaStream): Promise<HostHandle> {
     "broadcast",
     { event: "signal" },
     async ({ payload }: { payload: SignalingMessage }) => {
-      if (payload.kind === "listener-joined") {
-        // New listener — make an offer to them.
-        const pc = newPeer(payload.from);
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        send({
-          kind: "offer",
-          from: hostId,
-          to: payload.from,
-          sdp: offer.sdp ?? "",
-        });
-      } else if (payload.kind === "answer" && payload.to === hostId) {
-        const pc = peers.get(payload.from);
-        if (pc && pc.signalingState !== "stable") {
-          await pc.setRemoteDescription({ type: "answer", sdp: payload.sdp });
-        }
-      } else if (payload.kind === "ice" && payload.to === hostId) {
-        const pc = peers.get(payload.from);
-        if (pc) {
-          try {
-            await pc.addIceCandidate(payload.candidate);
-          } catch {
-            /* ignore stale candidates */
+      try {
+        if (payload.kind === "listener-joined") {
+          trace("host:listener-joined", { listenerId: payload.from });
+          const pc = newPeer(payload.from);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          send({
+            kind: "offer",
+            from: hostId,
+            to: payload.from,
+            sdp: offer.sdp ?? "",
+          });
+        } else if (payload.kind === "answer" && payload.to === hostId) {
+          const pc = peers.get(payload.from);
+          if (pc && pc.signalingState !== "stable") {
+            await pc.setRemoteDescription({ type: "answer", sdp: payload.sdp });
+          }
+        } else if (payload.kind === "ice" && payload.to === hostId) {
+          const pc = peers.get(payload.from);
+          if (pc) {
+            try {
+              await pc.addIceCandidate(payload.candidate);
+            } catch {
+              /* ignore stale candidates */
+            }
           }
         }
+      } catch (err) {
+        captureFault("host: signaling handler threw", err, { kind: payload.kind });
       }
     },
   );
@@ -196,11 +261,21 @@ export function joinListener(
 
   pc.ontrack = (e) => {
     audioStream = e.streams[0] ?? new MediaStream(e.track ? [e.track] : []);
+    trace("listener:ontrack", { tracks: audioStream.getTracks().length });
     emit();
   };
   pc.onconnectionstatechange = () => {
     connectionState = pc.connectionState;
+    trace("listener:state", { state: pc.connectionState });
+    if (pc.connectionState === "failed") {
+      captureFault("listener: peer connection failed");
+    }
     emit();
+  };
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === "failed") {
+      captureFault("listener: ICE failed");
+    }
   };
 
   const send = (msg: SignalingMessage) =>
@@ -221,21 +296,26 @@ export function joinListener(
     "broadcast",
     { event: "signal" },
     async ({ payload }: { payload: SignalingMessage }) => {
-      if (payload.kind === "offer" && payload.to === listenerId) {
-        hostId = payload.from;
-        await pc.setRemoteDescription({ type: "offer", sdp: payload.sdp });
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        send({
-          kind: "answer",
-          from: listenerId,
-          to: payload.from,
-          sdp: answer.sdp ?? "",
-        });
-      } else if (payload.kind === "ice" && payload.to === listenerId) {
-        try {
-          await pc.addIceCandidate(payload.candidate);
-        } catch { /* ignore */ }
+      try {
+        if (payload.kind === "offer" && payload.to === listenerId) {
+          hostId = payload.from;
+          trace("listener:offer-received");
+          await pc.setRemoteDescription({ type: "offer", sdp: payload.sdp });
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          send({
+            kind: "answer",
+            from: listenerId,
+            to: payload.from,
+            sdp: answer.sdp ?? "",
+          });
+        } else if (payload.kind === "ice" && payload.to === listenerId) {
+          try {
+            await pc.addIceCandidate(payload.candidate);
+          } catch { /* ignore */ }
+        }
+      } catch (err) {
+        captureFault("listener: signaling handler threw", err, { kind: payload.kind });
       }
     },
   );

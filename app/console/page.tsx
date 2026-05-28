@@ -33,6 +33,7 @@ import {
   type CloudTrack,
 } from "@/lib/cloudLibrary";
 import { writeSlots, subscribeSlots, readSlots } from "@/lib/routeSync";
+import { HostChatBridge } from "@/app/components/HostChatBridge";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slot state
@@ -1822,6 +1823,8 @@ export default function ConsolePage() {
           </div>
         </div>
       )}
+
+      <HostChatBridge />
 
       <button
         className="tweaks-fab"

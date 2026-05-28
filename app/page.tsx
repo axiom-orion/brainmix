@@ -52,6 +52,7 @@ import { PlaylistsModal, PickPlaylistModal } from "./components/PlaylistsModal";
 import { MyMixesModal } from "./components/MyMixesModal";
 import { EngineerCard } from "./components/EngineerCard";
 import { MixerSection } from "./components/MixerSection";
+import { HostChatBridge } from "./components/HostChatBridge";
 import {
   InfoButton,
   EvidenceBadge,
@@ -2637,6 +2638,9 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* Host chat bridge — shows LiveChat overlay when broadcasting in another tab. */}
+      <HostChatBridge />
 
       {/* Bottom tab nav (fixed) */}
       <nav className="fixed bottom-0 left-0 right-0 h-14 bg-black/90 backdrop-blur-md border-t border-zinc-900 z-20">

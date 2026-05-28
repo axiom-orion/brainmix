@@ -67,4 +67,12 @@ test.describe("BrainMix smoke", () => {
     await expect(page.getByText(/Layered brainwave entrainment/i)).toBeVisible();
     await expect(page.getByRole("link", { name: /Open the app/i }).first()).toBeVisible();
   });
+
+  test("/live index lists rooms or shows empty state", async ({ page }) => {
+    await page.goto("/live");
+    await expect(page.getByText(/Live rooms/i)).toBeVisible();
+    // Either rooms render, or the "no active rooms" empty state.
+    const startLink = page.getByRole("link", { name: /Start broadcast/i });
+    await expect(startLink.first()).toBeVisible();
+  });
 });

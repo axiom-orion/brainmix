@@ -72,6 +72,12 @@ export default function LiveHostPage() {
         );
       }
       setHandle(h);
+      // Broadcast the active token to other tabs (main app / console) so they
+      // can mount LiveChat in their own surface while DJing.
+      try {
+        window.localStorage.setItem("brainmix:live-host-token", h.token);
+        window.dispatchEvent(new CustomEvent("brainmix:host-token", { detail: h.token }));
+      } catch { /* ignore */ }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start broadcast");
     } finally {
@@ -92,6 +98,11 @@ export default function LiveHostPage() {
       .update({ is_active: false, last_active_at: new Date().toISOString() })
       .eq("token", token)
       .then(() => {});
+    // Clear cross-surface token.
+    try {
+      window.localStorage.removeItem("brainmix:live-host-token");
+      window.dispatchEvent(new CustomEvent("brainmix:host-token", { detail: null }));
+    } catch { /* ignore */ }
   }, []);
 
   const shareUrl = handle
