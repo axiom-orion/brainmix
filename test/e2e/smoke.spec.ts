@@ -50,4 +50,16 @@ test.describe("BrainMix smoke", () => {
     expect(r?.status()).toBe(200);
     await expect(page.getByText(/Sign in on the main app/i)).toBeVisible();
   });
+
+  test("/live/host renders broadcast page", async ({ page }) => {
+    await page.goto("/live/host");
+    await expect(page.getByText(/Live broadcast/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /Start broadcast/i })).toBeVisible();
+  });
+
+  test("/live/[token] listener page renders", async ({ page }) => {
+    await page.goto("/live/test-token");
+    await expect(page.getByText(/Listening room/i)).toBeVisible();
+    await expect(page.getByText(/Token · test-token/i)).toBeVisible();
+  });
 });

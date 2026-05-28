@@ -63,7 +63,8 @@ import {
 import { DeepDiveModal, AcademyModal } from "./components/AcademyModal";
 import { parseMetadata, guessFromFilename } from "@/lib/idTags";
 import { walkEntriesForAudio } from "@/lib/dropFolders";
-import type { MixBundle } from "@/lib/bundles";
+import { matchBundleTracks, type MixBundle } from "@/lib/bundles";
+import { writeSlots } from "@/lib/routeSync";
 import {
   setMediaMetadata,
   bindMediaActions,
@@ -455,6 +456,19 @@ export default function Home() {
     // If nothing is playing yet, mirror library as the default queue.
     if (queuePos == null) setQueue(library);
   }, [library, queuePos]);
+
+  // Cross-route sync: broadcast the currently-playing cloud track ID so
+  // /console (in another tab) can mirror it.
+  useEffect(() => {
+    if (queuePos == null || !queue[queuePos]) {
+      writeSlots({ trackIdA: null });
+      return;
+    }
+    const entry = queue[queuePos];
+    // Only cloud entries have an ID stable across routes.
+    const id = entry.source === "cloud" ? entry._cloud?.id ?? null : null;
+    writeSlots({ trackIdA: id });
+  }, [queuePos, queue]);
 
   // Load library + mixes based on auth state.
   useEffect(() => {
@@ -1792,18 +1806,24 @@ export default function Home() {
             onSignIn={() => setSignInOpen(true)}
             onBulkImport={() => bulkInputRef.current?.click()}
             onApplyBundle={(b: MixBundle) => {
-              // Load the bundle's first preset immediately, build the plan from
-              // its steps, switch to Studio so the user sees what just landed.
-              setPlan(
-                b.steps.map((s) => ({
-                  id: crypto.randomUUID(),
-                  presetId: s.presetId,
-                  minutes: s.minutes,
-                  trackId: null,
-                })),
-              );
+              // Build the sequencer plan. If the user has tracks matching the
+              // bundle's pairing artists, queue them on the player too — the
+              // matrix + music kick off together.
+              const matches = matchBundleTracks(b, library);
+              const planSteps = b.steps.map((s, i) => ({
+                id: crypto.randomUUID(),
+                presetId: s.presetId,
+                minutes: s.minutes,
+                // If we have matched tracks, attach the i-th one to the i-th step.
+                trackId: matches[i]?.id ?? null,
+              }));
+              setPlan(planSteps);
               const first = PRESETS[b.steps[0].presetId];
               if (first) setState(presetToState(first));
+              // If we found matched tracks, also start playing them as the queue.
+              if (matches.length > 0) {
+                playEntries(matches, 0);
+              }
               setAppView("studio");
             }}
           />

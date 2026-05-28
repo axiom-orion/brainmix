@@ -19,10 +19,18 @@ import { djBus, downloadBlob } from "@/lib/djBus";
 import {
   start as startEngine,
   stop as stopEngine,
+  setDroneGain,
+  setNoiseGain,
   type EngineConfig,
 } from "@/lib/audioEngine";
 import { PRESETS, type PresetId } from "@/lib/presets";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import {
+  listCloudTracks,
+  downloadTrack,
+  type CloudTrack,
+} from "@/lib/cloudLibrary";
+import { writeSlots, subscribeSlots, readSlots } from "@/lib/routeSync";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slot state
@@ -153,6 +161,13 @@ function ConsoleTopBar({
       <div className="actions">
         <Link href="/" className="console-back">
           ← Mobile app
+        </Link>
+        <Link
+          href="/live/host"
+          className="pill"
+          style={{ textDecoration: "none", color: "var(--rose)", borderColor: "var(--rose-40)" }}
+        >
+          ● Live
         </Link>
         <Link href="/stats" className="pill" style={{ textDecoration: "none" }}>
           📊 Stats
@@ -528,24 +543,31 @@ function Knob({ name, val, rot }: { name: string; val: string; rot: number }) {
 }
 
 /**
- * GainKnob — the only knob that's actually wired. Drag vertically to set
- * master gain 0..1. Rotation reflects the value.
+ * LiveKnob — vertical-drag rotary control 0..1. Used for every knob in the
+ * mixer column that's actually wired to audio. Double-click to reset to the
+ * "default" value passed in. Rotation reflects current value.
  */
-function GainKnob({
+function LiveKnob({
+  name,
   value,
   onChange,
+  format = (v) => v.toFixed(2),
+  resetValue = 0,
+  ariaLabel,
 }: {
+  name: string;
   value: number;
   onChange: (v: number) => void;
+  format?: (v: number) => string;
+  resetValue?: number;
+  ariaLabel?: string;
 }) {
-  // Map 0..1 → -135° (low) .. +135° (high)
   const rot = -135 + value * 270;
   const startDrag = (e: React.MouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
     const startV = value;
     const move = (ev: MouseEvent) => {
-      // 200px of vertical motion = full range; up = increase
       const dy = startY - ev.clientY;
       onChange(Math.max(0, Math.min(1, startV + dy / 200)));
     };
@@ -561,7 +583,7 @@ function GainKnob({
       <div
         className="k-knob"
         onMouseDown={startDrag}
-        onDoubleClick={() => onChange(1)}
+        onDoubleClick={() => onChange(resetValue)}
         style={
           {
             ["--rot" as string]: `${rot}deg`,
@@ -569,13 +591,13 @@ function GainKnob({
           } as React.CSSProperties
         }
         role="slider"
-        aria-label="Master gain"
+        aria-label={ariaLabel ?? name}
         aria-valuemin={0}
         aria-valuemax={1}
         aria-valuenow={value}
       />
-      <div className="name">Gain</div>
-      <div className="val">{value.toFixed(2)}</div>
+      <div className="name">{name}</div>
+      <div className="val">{format(value)}</div>
     </div>
   );
 }
@@ -594,6 +616,12 @@ function MixerColumn({
   onToggleRecord,
   masterGain,
   onMasterGain,
+  mixBalance,
+  onMixBalance,
+  droneGain,
+  onDroneGain,
+  noiseGain,
+  onNoiseGain,
   listenerCount,
 }: {
   crossfader: number;
@@ -609,6 +637,12 @@ function MixerColumn({
   onToggleRecord: () => void;
   masterGain: number;
   onMasterGain: (v: number) => void;
+  mixBalance: number;
+  onMixBalance: (v: number) => void;
+  droneGain: number;
+  onDroneGain: (v: number) => void;
+  noiseGain: number;
+  onNoiseGain: (v: number) => void;
   listenerCount: number;
 }) {
   const xfPct = (1 - crossfader) * 100;
@@ -684,10 +718,35 @@ function MixerColumn({
       </div>
 
       <div className="knobs">
-        <GainKnob value={masterGain} onChange={onMasterGain} />
-        <Knob name="Mix" val="50%" rot={-30} />
-        <Knob name="Drone" val="0.18" rot={90} />
-        <Knob name="Noise" val="brown" rot={-60} />
+        <LiveKnob
+          name="Gain"
+          value={masterGain}
+          onChange={onMasterGain}
+          resetValue={1}
+          ariaLabel="Master gain"
+        />
+        <LiveKnob
+          name="Mix"
+          value={mixBalance}
+          onChange={onMixBalance}
+          format={(v) => `${Math.round(v * 100)}%`}
+          resetValue={0.5}
+          ariaLabel="Matrix-vs-decks mix"
+        />
+        <LiveKnob
+          name="Drone"
+          value={droneGain}
+          onChange={onDroneGain}
+          resetValue={0.18}
+          ariaLabel="Drone layer gain"
+        />
+        <LiveKnob
+          name="Noise"
+          value={noiseGain}
+          onChange={onNoiseGain}
+          resetValue={0.12}
+          ariaLabel="Noise layer gain"
+        />
       </div>
       {listenerCount > 1 && (
         <div
@@ -989,7 +1048,18 @@ export default function ConsolePage() {
   const [deckA, setDeckA] = useState<DeckState>(EMPTY_DECK);
   const [deckB, setDeckB] = useState<DeckState>(EMPTY_DECK);
   const [masterGain, setMasterGain] = useState(1);
+  // Mix/Drone/Noise knob values 0..1. Mix is matrix-vs-decks balance.
+  const [mixBalance, setMixBalance] = useState(0.5);
+  const [droneGain, setDroneGainState] = useState(0.18);
+  const [noiseGain, setNoiseGainState] = useState(0.12);
   const [listenerCount, setListenerCount] = useState(1);
+  // Library picker state.
+  const [cloudTracks, setCloudTracks] = useState<CloudTrack[]>([]);
+  const [pickerSide, setPickerSide] = useState<"a" | "b" | null>(null);
+  // Drag-drop UI state. Tracks which deck the cursor is hovering over so we
+  // can route the drop to the correct one (A vs B by left/right half).
+  const [dragActive, setDragActive] = useState(false);
+  const dragCounter = useRef(0);
   const audioARef = useRef<HTMLAudioElement>(null);
   const audioBRef = useRef<HTMLAudioElement>(null);
   const fileARef = useRef<HTMLInputElement>(null);
@@ -1076,6 +1146,16 @@ export default function ConsolePage() {
   // Master gain → djBus.
   useEffect(() => { djBus.setMasterGain(masterGain); }, [masterGain]);
 
+  // Mix balance: 0 = all matrix, 1 = all decks. Set the matrix layer's input
+  // gain inversely — the decks already pass through their own xfade chain.
+  useEffect(() => {
+    djBus.setMatrixGain(1 - mixBalance);
+  }, [mixBalance]);
+
+  // Drone + Noise: live engine setters (no-op when engine isn't running).
+  useEffect(() => { setDroneGain(droneGain); }, [droneGain]);
+  useEffect(() => { setNoiseGain(noiseGain); }, [noiseGain]);
+
   // Persist deck metadata + master gain across reloads.
   const CONSOLE_STATE_KEY = "brainmix:console-decks";
   useEffect(() => {
@@ -1145,7 +1225,6 @@ export default function ConsolePage() {
       el.currentTime = 0;
       setDeck((cur) => {
         if (cur.url) URL.revokeObjectURL(cur.url);
-        // Preserve EQ/filter/tempo/cues — only swap the file + transport.
         return {
           ...cur,
           url,
@@ -1155,13 +1234,88 @@ export default function ConsolePage() {
           position: 0,
           duration: 0,
           playing: false,
-          // Clear hot cues — they were timecodes for the previous track.
           hotCues: [null, null, null, null],
         };
       });
     },
     [],
   );
+
+  // Load a CloudTrack into a deck — downloads the file via Supabase, creates
+  // a blob URL, then routes it through the same path as loadFile.
+  const loadCloudTrack = useCallback(
+    async (side: "a" | "b", track: CloudTrack) => {
+      try {
+        const blob = await downloadTrack(track.storagePath);
+        const url = URL.createObjectURL(blob);
+        const el = side === "a" ? audioARef.current : audioBRef.current;
+        const setDeck = side === "a" ? setDeckA : setDeckB;
+        if (!el) return;
+        el.src = url;
+        el.currentTime = 0;
+        setDeck((cur) => {
+          if (cur.url) URL.revokeObjectURL(cur.url);
+          return {
+            ...cur,
+            url,
+            name: track.name,
+            artist: track.artist || (track.album ?? "Cloud library"),
+            bpm: track.bpm,
+            position: 0,
+            duration: 0,
+            playing: false,
+            hotCues: [null, null, null, null],
+          };
+        });
+        // Broadcast to other tabs.
+        if (side === "a") writeSlots({ trackIdA: track.id });
+        else writeSlots({ trackIdB: track.id });
+      } catch (e) {
+        console.error("loadCloudTrack failed:", e);
+      }
+    },
+    [],
+  );
+
+  // Lazy-load the cloud library when the picker first opens.
+  useEffect(() => {
+    if (pickerSide && cloudTracks.length === 0) {
+      listCloudTracks().then(setCloudTracks).catch(() => {});
+    }
+  }, [pickerSide, cloudTracks.length]);
+
+  // Listen for cross-route slot changes — if /(mobile) starts playing a cloud
+  // track, mirror it to deck A here. Best-effort: only when we don't already
+  // have something loaded on A.
+  useEffect(() => {
+    const unsubscribe = subscribeSlots((snap) => {
+      if (snap.trackIdA && !deckA.url) {
+        // Need the track row to load. Resolve via Supabase.
+        (async () => {
+          try {
+            const all = await listCloudTracks();
+            setCloudTracks(all);
+            const t = all.find((x) => x.id === snap.trackIdA);
+            if (t) loadCloudTrack("a", t);
+          } catch { /* ignore */ }
+        })();
+      }
+    });
+    // Initial sync on mount.
+    const initial = readSlots();
+    if (initial?.trackIdA && !deckA.url) {
+      (async () => {
+        try {
+          const all = await listCloudTracks();
+          setCloudTracks(all);
+          const t = all.find((x) => x.id === initial.trackIdA);
+          if (t) loadCloudTrack("a", t);
+        } catch { /* ignore */ }
+      })();
+    }
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const togglePlay = useCallback(async (side: "a" | "b") => {
     const el = side === "a" ? audioARef.current : audioBRef.current;
@@ -1286,7 +1440,68 @@ export default function ConsolePage() {
   const lcdGate = presetCfg?.params.bpmSync ?? 0;
 
   return (
-    <div className={`console-app ${ambienceClass}`}>
+    <div
+      className={`console-app ${ambienceClass}`}
+      onDragEnter={(e) => {
+        if (e.dataTransfer.types?.includes("Files")) {
+          e.preventDefault();
+          dragCounter.current++;
+          setDragActive(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        if (e.dataTransfer.types?.includes("Files")) {
+          e.preventDefault();
+          dragCounter.current--;
+          if (dragCounter.current <= 0) {
+            dragCounter.current = 0;
+            setDragActive(false);
+          }
+        }
+      }}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types?.includes("Files")) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        dragCounter.current = 0;
+        setDragActive(false);
+        const files = Array.from(e.dataTransfer.files ?? []).filter(
+          (f) =>
+            /^audio\//.test(f.type) ||
+            /\.(mp3|m4a|wav|flac|ogg|aac|opus)$/i.test(f.name),
+        );
+        if (files.length === 0) return;
+        // Route by left/right half of the viewport.
+        const half = window.innerWidth / 2;
+        const targetSide: "a" | "b" = e.clientX < half ? "a" : "b";
+        loadFile(targetSide, files[0]);
+        // If a second file is dropped at the same time, send it to the other side.
+        if (files.length > 1) {
+          const other = targetSide === "a" ? "b" : "a";
+          loadFile(other, files[1]);
+        }
+      }}
+    >
+      {dragActive && (
+        <div
+          className="pointer-events-none"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 40,
+            background: "rgba(0, 255, 204, 0.06)",
+            border: "2px dashed var(--mint-40)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--mint)",
+            fontSize: 20,
+          }}
+        >
+          Drop on the left half → Deck A · right → Deck B
+        </div>
+      )}
       <ConsoleTopBar view={view} onView={setView} />
 
       <main className="console" style={consoleStyle}>
@@ -1295,7 +1510,7 @@ export default function ConsolePage() {
           spinning={deckA.playing && tweaks.spinSpeed > 0}
           state={deckA}
           onTogglePlay={() => togglePlay("a")}
-          onLoad={() => fileARef.current?.click()}
+          onLoad={() => setPickerSide("a")}
           onSeek={(t) => seekDeck("a", t)}
           onFilter={(hz) => setFilter("a", hz)}
           onEq={(band, db) => setEq("a", band, db)}
@@ -1318,6 +1533,12 @@ export default function ConsolePage() {
           onToggleRecord={toggleRecord}
           masterGain={masterGain}
           onMasterGain={setMasterGain}
+          mixBalance={mixBalance}
+          onMixBalance={setMixBalance}
+          droneGain={droneGain}
+          onDroneGain={setDroneGainState}
+          noiseGain={noiseGain}
+          onNoiseGain={setNoiseGainState}
           listenerCount={listenerCount}
         />
         {tweaks.deckCount === 2 && (
@@ -1326,7 +1547,7 @@ export default function ConsolePage() {
             spinning={deckB.playing && tweaks.spinSpeed > 0}
             state={deckB}
             onTogglePlay={() => togglePlay("b")}
-            onLoad={() => fileBRef.current?.click()}
+            onLoad={() => setPickerSide("b")}
             onSeek={(t) => seekDeck("b", t)}
             onFilter={(hz) => setFilter("b", hz)}
             onEq={(band, db) => setEq("b", band, db)}
@@ -1395,6 +1616,178 @@ export default function ConsolePage() {
         crossfader={crossfader}
         onTogglePlay={togglePlay}
       />
+
+      {/* Deck-load picker modal: disk or cloud library. */}
+      {pickerSide && (
+        <div
+          onClick={() => setPickerSide(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 50,
+            background: "rgba(0,0,0,0.8)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "var(--surface-1)",
+              border: "1px solid var(--hairline)",
+              borderRadius: "var(--r-xl)",
+              padding: 18,
+              maxWidth: 420,
+              width: "100%",
+              maxHeight: "80vh",
+              overflowY: "auto",
+              color: "var(--fg-1)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                textTransform: "uppercase",
+                letterSpacing: "0.16em",
+                color: pickerSide === "a" ? "var(--mint)" : "var(--violet)",
+                marginBottom: 4,
+              }}
+            >
+              Load into Deck {pickerSide.toUpperCase()}
+            </div>
+            <h3
+              style={{
+                fontSize: 16,
+                fontWeight: 500,
+                color: "var(--fg-1)",
+                margin: "0 0 14px 0",
+              }}
+            >
+              Pick a source
+            </h3>
+
+            <button
+              onClick={() => {
+                const ref = pickerSide === "a" ? fileARef : fileBRef;
+                ref.current?.click();
+                setPickerSide(null);
+              }}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                marginBottom: 8,
+                borderRadius: "var(--r-md)",
+                border: "1px solid var(--mint-40)",
+                background: "var(--mint-05)",
+                color: "var(--mint)",
+                fontSize: 12,
+                textTransform: "uppercase",
+                letterSpacing: "0.16em",
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              📁 From disk (drag-drop also works)
+            </button>
+
+            <div
+              style={{
+                fontSize: 10,
+                textTransform: "uppercase",
+                letterSpacing: "0.16em",
+                color: "var(--fg-4)",
+                margin: "14px 0 6px 0",
+              }}
+            >
+              ☁ From cloud library · {cloudTracks.length}
+            </div>
+            {cloudTracks.length === 0 ? (
+              <p
+                style={{
+                  fontSize: 12,
+                  color: "var(--fg-4)",
+                  lineHeight: 1.5,
+                }}
+              >
+                Sign in on the mobile app and import tracks first — they sync
+                here automatically.
+              </p>
+            ) : (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+              >
+                {cloudTracks.slice(0, 60).map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      loadCloudTrack(pickerSide, t);
+                      setPickerSide(null);
+                    }}
+                    style={{
+                      textAlign: "left",
+                      padding: "8px 10px",
+                      borderRadius: "var(--r-sm)",
+                      border: "1px solid var(--hairline)",
+                      background: "var(--surface-mute)",
+                      color: "var(--fg-2)",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    <div style={{ fontSize: 13, color: "var(--fg-1)" }}>{t.name}</div>
+                    {(t.artist || t.album) && (
+                      <div style={{ fontSize: 11, color: "var(--fg-4)" }}>
+                        {t.artist}
+                        {t.artist && t.album && " · "}
+                        {t.album}
+                      </div>
+                    )}
+                    {t.bpm && (
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontFamily: "var(--font-mono)",
+                          color: "var(--fg-5)",
+                          marginTop: 2,
+                        }}
+                      >
+                        {t.bpm} BPM
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => setPickerSide(null)}
+              style={{
+                width: "100%",
+                marginTop: 14,
+                padding: "8px 12px",
+                borderRadius: "var(--r-sm)",
+                background: "transparent",
+                border: "1px solid var(--hairline)",
+                color: "var(--fg-4)",
+                cursor: "pointer",
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: "0.16em",
+                fontFamily: "inherit",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       <button
         className="tweaks-fab"

@@ -383,6 +383,27 @@ export function setMasterGain(gain: number) {
   master.gain.linearRampToValueAtTime(gain, ctx.currentTime + 0.15);
 }
 
+/** Live setter for the drone layer's amplitude. No-op when engine isn't running. */
+export function setDroneGain(gain: number) {
+  if (!active || !active.droneGain) return;
+  const t = active.ctx.currentTime;
+  active.droneGain.gain.cancelScheduledValues(t);
+  active.droneGain.gain.linearRampToValueAtTime(Math.max(0, gain), t + 0.15);
+}
+
+/** Live setter for the noise-layer amplitude. No-op when engine isn't running. */
+export function setNoiseGain(gain: number) {
+  if (!active || !active.noiseGain) return;
+  const t = active.ctx.currentTime;
+  active.noiseGain.gain.cancelScheduledValues(t);
+  active.noiseGain.gain.linearRampToValueAtTime(Math.max(0, gain), t + 0.15);
+}
+
+/** Returns whether the matrix engine is currently running. */
+export function isRunning(): boolean {
+  return active !== null;
+}
+
 /**
  * Play a synthesized 432 Hz singing-bowl bell as a state-transition cue.
  * Used by the Pomodoro timer between focus/rest blocks.
