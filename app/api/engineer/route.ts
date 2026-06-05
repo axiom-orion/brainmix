@@ -1,5 +1,6 @@
 import { streamText } from "ai";
 import { TIPS } from "@/lib/engineer";
+import { getFlagAsync } from "@/lib/flags";
 
 /**
  * The Engineer, but smarter.
@@ -42,6 +43,13 @@ When you suggest a fix, also identify which UI control they'd touch (e.g., "drop
 }
 
 export async function POST(req: Request): Promise<Response> {
+  if (!(await getFlagAsync("llm_engineer"))) {
+    return new Response(
+      "The LLM engineer is temporarily disabled. The built-in rule engine still works.",
+      { status: 503 },
+    );
+  }
+
   let body: { state?: unknown };
   try {
     body = await req.json();

@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import { getFlag } from "@/lib/flags";
 
 interface ChatMessage {
   id: string;
@@ -68,6 +69,7 @@ export function LiveChat({ token }: { token: string }) {
 
   // Subscribe to chat channel for this token.
   useEffect(() => {
+    if (!getFlag("realtime_sync")) return;
     const sb = getSupabaseClient();
     const channel = sb.channel(`chat-${token}`, {
       config: { broadcast: { self: true } },

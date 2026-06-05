@@ -11,6 +11,8 @@
  * files stay where they were loaded.
  */
 
+import { getFlag } from "@/lib/flags";
+
 export interface RouteSlotSnapshot {
   /** Cloud track id loaded into deck A, or null. */
   trackIdA: string | null;
@@ -57,6 +59,7 @@ export function subscribeSlots(
   handler: (snapshot: RouteSlotSnapshot) => void,
 ): () => void {
   if (typeof window === "undefined") return () => {};
+  if (!getFlag("realtime_sync")) return () => {};
   const listener = (e: StorageEvent) => {
     if (e.key !== STORAGE_KEY || !e.newValue) return;
     try {
