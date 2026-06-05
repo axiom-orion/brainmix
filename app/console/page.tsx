@@ -33,6 +33,7 @@ import {
   type CloudTrack,
 } from "@/lib/cloudLibrary";
 import { writeSlots, subscribeSlots, readSlots } from "@/lib/routeSync";
+import { getFlag, getFlagAsync } from "@/lib/flags";
 import { HostChatBridge } from "@/app/components/HostChatBridge";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1050,6 +1051,13 @@ export default function ConsolePage() {
   const [recording, setRecording] = useState(false);
   const [recordElapsed, setRecordElapsed] = useState(0);
 
+  // Kill switch: brainmix.webrtc_console in GrowthBook. Checked after mount
+  // (not during render) so SSR hydration stays consistent.
+  const [consoleKilled, setConsoleKilled] = useState(false);
+  useEffect(() => {
+    getFlagAsync("webrtc_console").then((enabled) => setConsoleKilled(!enabled));
+  }, []);
+
   // Per-deck slot state + audio elements + file inputs.
   const [deckA, setDeckA] = useState<DeckState>(EMPTY_DECK);
   const [deckB, setDeckB] = useState<DeckState>(EMPTY_DECK);
@@ -1200,6 +1208,10 @@ export default function ConsolePage() {
   // unique ephemeral key and we count the channel size. No audio relay yet —
   // this is just "who else is here looking at the console".
   useEffect(() => {
+    if (!getFlag("realtime_sync")) {
+      setListenerCount(1);
+      return;
+    }
     let mounted = true;
     const sb = getSupabaseClient();
     const channel = sb.channel("console-presence", {
@@ -1473,6 +1485,20 @@ export default function ConsolePage() {
   const lcdBeatHz = presetCfg?.params.beatHz ?? 14.0;
   const lcdCarrier = presetCfg?.params.carrierHz ?? 200;
   const lcdGate = presetCfg?.params.bpmSync ?? 0;
+
+  if (consoleKilled) {
+    return (
+      <div className="console-app" style={{ display: "grid", placeItems: "center", minHeight: "100vh" }}>
+        <div style={{ textAlign: "center", opacity: 0.8 }}>
+          <h1>Console temporarily unavailable</h1>
+          <p>
+            The console is undergoing maintenance. The main{" "}
+            <Link href="/">BrainMix studio</Link> is still available.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

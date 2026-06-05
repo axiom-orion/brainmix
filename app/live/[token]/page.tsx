@@ -16,6 +16,7 @@ import Link from "next/link";
 import { use } from "react";
 import { joinListener, type ListenerHandle } from "@/lib/liveRoom";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import { getFlag } from "@/lib/flags";
 import { LiveChat } from "@/app/components/LiveChat";
 
 interface Props {
@@ -43,6 +44,7 @@ export default function LiveListenerPage({ params }: Props) {
         }
       });
     // Realtime: refresh when the row changes (host starts/stops).
+    if (!getFlag("realtime_sync")) return;
     const channel = sb
       .channel(`live-room-meta-${token}`)
       .on(
