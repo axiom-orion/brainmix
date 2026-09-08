@@ -15,7 +15,7 @@
     "@sentry/nextjs": "^10.70.0",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.1",
-    "ai": "^6.0.191",
+    "ai": "^6.0.277",
     "next": "16.3.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
