@@ -52,7 +52,7 @@ gate that hides the 40 Hz flutter in your track's off-beats.
 - **Session sequencer** — chain presets (and optional tracks) into a timed plan.
 - **The Engineer** — a deterministic tip library plus an optional LLM advisor
   that reads your current mix state and suggests one specific change
-  (`app/api/engineer`, Vercel AI SDK + AI Gateway).
+  (`app/api/engineer`, AI SDK + AI Gateway).
 - **Cloud sync & sharing** — save tracks, playlists, and recorded mixes to
   Supabase; share mixes and public playlists via tokenized links
   (`/m/[token]`, `/p/[token]`).
@@ -69,11 +69,11 @@ gate that hides the 40 Hz flutter in your track's off-beats.
 | Audio          | Web Audio API (no external audio deps)              |
 | Styling        | Tailwind CSS v4                                      |
 | Auth + data    | Supabase (Auth, Postgres + RLS, Storage, Realtime)  |
-| AI             | Vercel AI SDK (`ai`) via Vercel AI Gateway          |
+| AI             | AI SDK (`ai`) via AI Gateway                        |
 | Realtime audio | WebRTC (mesh) + Supabase Realtime signaling         |
 | Monitoring     | Sentry (`@sentry/nextjs`)                           |
 | Tests          | Vitest (unit) + Playwright (e2e/smoke)              |
-| Hosting        | Vercel                                              |
+| Hosting        | Cloudflare Workers (via OpenNext)                   |
 
 ## Getting started
 
@@ -94,12 +94,15 @@ variables are present.
 | Variable                                                              | Required for                            |
 | --------------------------------------------------------------------- | --------------------------------------- |
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`           | Auth, cloud library, sharing, realtime  |
-| `AI_GATEWAY_API_KEY`                                                  | The LLM Engineer (auto-provisioned on Vercel when AI Gateway is enabled) |
+| `AI_GATEWAY_API_KEY`                                                  | The LLM Engineer (runtime secret)       |
+| `NEXT_PUBLIC_SITE_URL`                                                | Canonical URL for metadata + share links (optional; defaults to https://brainmix.racason.workers.dev) |
 | `NEXT_PUBLIC_TURN_URL` / `_USERNAME` / `_CREDENTIAL`                  | Reliable live rooms behind strict NAT (optional; falls back to public STUN/TURN) |
 | `SENTRY_ORG`, `SENTRY_PROJECT`, Sentry DSN                            | Error monitoring + source-map upload    |
 
-Copy the values into `.env.local` for local dev, or run `vercel env pull` after
-linking the project.
+Copy the values into `.env.local` for local dev. `NEXT_PUBLIC_*` values are
+inlined at build time; server-only values (`AI_GATEWAY_API_KEY`, `SENTRY_DSN`)
+are Worker secrets in production (`wrangler secret put <NAME>`) and go in
+`.dev.vars` for `npm run preview:cf`.
 
 ### Database
 
@@ -122,10 +125,27 @@ supabase db push
 | `npm run test:watch` | Vitest in watch mode                              |
 | `npm run test:e2e`   | Playwright end-to-end + smoke tests               |
 | `npm run typecheck`  | `tsc --noEmit`                                     |
+| `npm run build:cf`   | Build the Cloudflare Worker with OpenNext         |
+| `npm run preview:cf` | Build, then serve the Worker locally (`wrangler dev`) |
+| `npm run deploy:cf`  | Build, then deploy the Worker (`wrangler deploy`)  |
 
 CI (`.github/workflows/ci.yml`) runs typecheck, unit tests, and a build on every
 push and PR; a post-deploy smoke workflow pings the home page and the Engineer
 endpoint after a successful deployment.
+
+## Deploy (Cloudflare Workers)
+
+The app runs on Cloudflare Workers as the `brainmix` Worker, built with
+[OpenNext](https://opennext.js.org/cloudflare) (`open-next.config.ts`,
+`wrangler.jsonc`), and is served at <https://brainmix.racason.workers.dev>.
+
+- **From GitHub:** set the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+  repo secrets (plus the `NEXT_PUBLIC_*` repo variables you use), then run the
+  **Deploy to Cloudflare** workflow by hand. The smoke workflow runs after it.
+- **From your machine:** `npx wrangler login`, then `npm run deploy:cf`.
+
+Set runtime secrets once with `npx wrangler secret put AI_GATEWAY_API_KEY`
+(and `SENTRY_DSN` if you use a server-side DSN).
 
 ## Project layout
 

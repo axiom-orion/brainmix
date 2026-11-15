@@ -6,6 +6,7 @@
 
 import { getSupabaseClient } from "./supabase/client";
 import type { DBTrack, DBMix, DBPlaylist } from "./supabase/types";
+import { SITE_URL } from "./site";
 
 export interface CloudTrack {
   id: string;
@@ -350,7 +351,7 @@ export async function setPlaylistPublic(
 
 export function playlistShareUrl(shareToken: string): string {
   if (typeof window === "undefined") {
-    return `https://brainmix.vercel.app/p/${shareToken}`;
+    return `${SITE_URL}/p/${shareToken}`;
   }
   return `${window.location.origin}/p/${shareToken}`;
 }

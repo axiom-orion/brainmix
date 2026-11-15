@@ -5,6 +5,7 @@
 
 import Link from "next/link";
 import type { Metadata } from "next";
+import { SITE_HOST } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "About BrainMix · Layered brainwave entrainment + DJ studio",
@@ -129,13 +130,13 @@ export default function AboutPage() {
 
         <Section title="Built on">
           <p className="text-sm text-zinc-500">
-            Next.js 16 · React 19 · Web Audio API · Supabase · Sentry · Vercel ·
+            Next.js 16 · React 19 · Web Audio API · Supabase · Sentry · Cloudflare Workers ·
             Tailwind 4. Open-source.
           </p>
         </Section>
 
         <div className="mt-16 pt-8 border-t border-zinc-900 text-[11px] uppercase tracking-widest text-zinc-600 flex justify-between">
-          <span>brainmix.vercel.app</span>
+          <span>{SITE_HOST}</span>
           <Link href="/" className="hover:text-[#00ffcc]">
             Open the app →
           </Link>
