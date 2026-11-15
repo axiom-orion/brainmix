@@ -15,7 +15,7 @@
     "deploy:cf": "npm run build:cf && wrangler deploy"
   },
   "dependencies": {
-    "@sentry/nextjs": "^10.70.0",
+    "@sentry/nextjs": "^10.75.2",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.1",
     "ai": "^6.0.191",
