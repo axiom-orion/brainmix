@@ -1,0 +1,39 @@
+name: Deploy to Cloudflare
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build (OpenNext for Cloudflare)
+        run: npm run build:cf
+        env:
+          # NEXT_PUBLIC_* values are inlined into the bundle at build time.
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY || secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+          NEXT_PUBLIC_TURN_URL: ${{ vars.NEXT_PUBLIC_TURN_URL }}
+          NEXT_PUBLIC_TURN_USERNAME: ${{ vars.NEXT_PUBLIC_TURN_USERNAME }}
+          NEXT_PUBLIC_TURN_CREDENTIAL: ${{ vars.NEXT_PUBLIC_TURN_CREDENTIAL }}
+          NEXT_PUBLIC_GROWTHBOOK_CLIENT_KEY: ${{ vars.NEXT_PUBLIC_GROWTHBOOK_CLIENT_KEY }}
+          NEXT_PUBLIC_GROWTHBOOK_API_HOST: ${{ vars.NEXT_PUBLIC_GROWTHBOOK_API_HOST }}
+          # Optional Sentry source-map upload (skipped when any is missing).
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_RELEASE: ${{ github.sha }}
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy

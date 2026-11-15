@@ -1,17 +1,23 @@
 name: Post-deploy smoke
 
 on:
-  deployment_status:
+  workflow_run:
+    workflows: ["Deploy to Cloudflare"]
+    types: [completed]
+  workflow_dispatch:
+
+env:
+  SITE_URL: https://brainmix.racason.workers.dev
 
 jobs:
   smoke:
-    if: github.event.deployment_status.state == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Home is 200
-        run: curl -fsS ${{ github.event.deployment_status.target_url }} > /dev/null
+        run: curl -fsS "$SITE_URL" > /dev/null
       - name: Engineer API responds
         run: |
-          curl -fsS -X POST ${{ github.event.deployment_status.target_url }}/api/engineer \
+          curl -fsS -X POST "$SITE_URL/api/engineer" \
             -H 'content-type: application/json' \
             -d '{"state":{}}' | head -c 200

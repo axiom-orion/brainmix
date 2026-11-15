@@ -8,9 +8,9 @@ import { getFlagAsync } from "@/lib/flags";
  * POST /api/engineer
  * Body: { state: EngineerState }
  *
- * Returns a streamed text response. Uses Vercel AI Gateway model strings -
- * no provider-specific SDK lock-in. Requires AI_GATEWAY_API_KEY at runtime
- * (auto-provisioned on Vercel when AI Gateway is enabled).
+ * Returns a streamed text response. Uses AI Gateway model strings (the `ai`
+ * SDK's default gateway provider) - no provider-specific SDK lock-in.
+ * Requires the AI_GATEWAY_API_KEY secret at runtime.
  *
  * Graceful degradation: if no key, returns 503 with a hint. The deterministic
  * engineer in the UI keeps working regardless.
@@ -60,9 +60,9 @@ export async function POST(req: Request): Promise<Response> {
     return new Response("Missing state", { status: 400 });
   }
 
-  if (!process.env.AI_GATEWAY_API_KEY && !process.env.VERCEL) {
+  if (!process.env.AI_GATEWAY_API_KEY) {
     return new Response(
-      "The LLM engineer needs AI_GATEWAY_API_KEY. On Vercel, enable AI Gateway in your project settings - the key is auto-provisioned. Locally, run `vercel env pull` after linking the project.",
+      "The LLM engineer needs AI_GATEWAY_API_KEY. In production, set it with `wrangler secret put AI_GATEWAY_API_KEY`; locally, add it to .env.local (or .dev.vars for `wrangler dev`).",
       { status: 503 },
     );
   }

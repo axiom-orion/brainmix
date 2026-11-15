@@ -9,7 +9,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:cf": "opennextjs-cloudflare build",
+    "preview:cf": "npm run build:cf && wrangler dev",
+    "deploy:cf": "npm run build:cf && wrangler deploy"
   },
   "dependencies": {
     "@sentry/nextjs": "^10.70.0",
@@ -21,6 +24,7 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+    "@opennextjs/cloudflare": "1.20.2",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
@@ -29,6 +33,7 @@
     "@vitest/ui": "^4.1.7",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "wrangler": "4.162.0"
   }
 }

@@ -9,7 +9,7 @@
  * works fully offline). Each tip has a trigger that fires on certain state, a
  * voice (the message), and an optional one-tap apply() that mutates state.
  *
- * Designed to be swappable: when you deploy and wire up Vercel AI Gateway,
+ * Designed to be swappable: when you deploy and wire up an AI Gateway key,
  * the same TIPS array can seed an LLM system prompt, and the analyzer can fall
  * back to rules when offline.
  */

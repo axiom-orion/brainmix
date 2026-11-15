@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { RegisterSW } from "./register-sw";
 import { AuthProvider } from "./auth-provider";
+import { SITE_URL } from "@/lib/site";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://brainmix.vercel.app"),
+  metadataBase: new URL(SITE_URL),
   title: {
     default: "BrainMix · Neuro-Acoustic Matrix",
     template: "%s · BrainMix",
@@ -45,7 +46,7 @@ export const metadata: Metadata = {
     title: "BrainMix · Neuro-Acoustic Matrix",
     description:
       "Layered brainwave entrainment + DJ studio. Your music, recordable mixes. Free, runs in any browser.",
-    url: "https://brainmix.vercel.app",
+    url: SITE_URL,
     images: [{ url: "/icon.svg", width: 512, height: 512, alt: "BrainMix" }],
   },
   twitter: {

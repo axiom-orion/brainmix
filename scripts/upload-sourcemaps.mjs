@@ -22,8 +22,8 @@ if (missing.length) {
 }
 
 const release =
-  process.env.VERCEL_GIT_COMMIT_SHA ||
   process.env.SENTRY_RELEASE ||
+  process.env.GITHUB_SHA ||
   undefined;
 const releaseArgs = release ? ["--release", release] : [];
 

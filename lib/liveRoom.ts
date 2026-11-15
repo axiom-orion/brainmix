@@ -41,8 +41,8 @@ function captureFault(message: string, err?: unknown, extra?: Record<string, unk
  *   1. STUN — always. Free, public. Resolves your own IP for ICE candidates.
  *      Sufficient for ~80% of peer connections (non-symmetric-NAT networks).
  *
- *   2. Custom TURN — set NEXT_PUBLIC_TURN_URL / _USERNAME / _CREDENTIAL via
- *      Vercel env vars. Use Cloudflare Calls (free up to 1000 GB/month) or
+ *   2. Custom TURN — set NEXT_PUBLIC_TURN_URL / _USERNAME / _CREDENTIAL as
+ *      build-time env vars (GitHub repo variables for the deploy workflow). Use Cloudflare Calls (free up to 1000 GB/month) or
  *      Twilio TURN (~$0.40/GB) for production. Required for ~20% of users
  *      behind symmetric NAT / strict corporate firewalls.
  *
@@ -52,10 +52,9 @@ function captureFault(message: string, err?: unknown, extra?: Record<string, unk
  * Cloudflare TURN setup (recommended):
  *   1. https://dash.cloudflare.com/?to=/:account/calls → New TURN app
  *   2. Generate credentials → copy URL + username + credential
- *   3. vercel env add NEXT_PUBLIC_TURN_URL production       (paste turn:...)
- *   4. vercel env add NEXT_PUBLIC_TURN_USERNAME production
- *   5. vercel env add NEXT_PUBLIC_TURN_CREDENTIAL production
- *   6. Redeploy.
+ *   3. Add GitHub repo variables NEXT_PUBLIC_TURN_URL (turn:...),
+ *      NEXT_PUBLIC_TURN_USERNAME and NEXT_PUBLIC_TURN_CREDENTIAL
+ *   4. Re-run the "Deploy to Cloudflare" workflow (they are inlined at build).
  */
 function iceServers(): RTCIceServer[] {
   const servers: RTCIceServer[] = [
